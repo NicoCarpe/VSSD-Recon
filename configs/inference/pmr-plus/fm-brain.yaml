@@ -1,0 +1,43 @@
+data:
+  class_path: pl_modules.InferenceDataModule
+  init_args:
+    slice_dataset: data.FastmriSliceDataset
+    data_path: /gpfs/home/bingyx01/mridatasets/fm-brain/multicoil_test
+    challenge: multicoil
+    test_transform:
+      class_path: data.transforms.FastmriDataTransform
+      init_args:
+        mask_func: null
+        uniform_resolution:
+        - 384
+        - 384
+        use_seed: True
+        mask_type: 'cartesian'
+        test_num_low_frequencies: -1
+    num_adj_slices: 5
+    batch_size: 1
+    distributed_sampler: false
+    test_filter: 
+      class_path: data.FuncFilterString
+      init_args:
+        filter_str: null #file_brain_AXFLAIR_200_6002441.h5
+
+
+# dataset specific settings
+seed_everything: 42
+trainer:
+  accelerator: gpu
+  strategy: ddp
+  devices: 4
+  num_nodes: 1
+  logger: False
+  callbacks:
+    -
+      class_path: __main__.CustomWriter
+      init_args:
+        output_dir: _predict/fastmri-brain/test-plus
+        write_interval: batch_and_epoch
+model:
+  class_path: pl_modules.PromptMrModule
+
+ckpt_path: weights/fm-brain/promptmr-plus-epoch=44-step=2083275.ckpt

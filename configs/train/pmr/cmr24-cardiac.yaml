@@ -1,0 +1,62 @@
+data:
+  class_path: pl_modules.DataModule
+  init_args:
+    slice_dataset: data.CmrxReconSliceDataset
+    data_path: /gpfs/home/bingyx01/mridatasets/cmrxrecon2024
+    challenge: multicoil
+    data_balancer:
+      class_path: data.BalanceSampler
+      init_args: 
+        ratio_dict: {
+          'T1map': 2, 'T2map': 6, 'cine_lax': 2, 'cine_sax': 1, 
+          'cine_lvot': 6, 'aorta_sag': 1, 'aorta_tra': 1,'tagging': 1 
+        }
+    train_transform:
+      class_path: data.CmrxReconDataTransform
+      init_args:
+        mask_func:
+          class_path: data.CmrxRecon24MaskFunc
+          init_args:
+            num_low_frequencies: 
+            - 16
+            num_adj_slices: &num_adj_slices 5
+            mask_path: /gpfs/home/bingyx01/mridatasets/cmrxrecon2024/mask/mask_radial.h5
+        uniform_resolution: null
+        use_seed: false
+    val_transform:
+      class_path: data.CmrxReconDataTransform
+      init_args:
+        mask_func:
+          class_path: data.CmrxRecon24MaskFunc
+          init_args:
+            num_low_frequencies: 
+            - 16
+            num_adj_slices: *num_adj_slices
+            mask_path: /gpfs/home/bingyx01/mridatasets/cmrxrecon2024/mask/mask_radial.h5
+        uniform_resolution: null
+        use_seed: True
+    combine_train_val: false
+    num_adj_slices: *num_adj_slices
+    batch_size: 1
+    distributed_sampler: true
+    use_dataset_cache_file: false
+
+# dataset specific settings
+trainer:
+  strategy: ddp
+  devices: 4
+  num_nodes: 1
+  max_epochs: 12
+  logger: 
+    class_path: lightning.pytorch.loggers.WandbLogger
+    init_args:
+      save_dir: exp/cmr24-cardiac/pmr # path to save experiment and checkpoint
+      tags: [cmr24-cardiac]
+      name: cmr24-cardiac-pmr-plus
+model:
+  class_path: pl_modules.PromptMrModule
+  init_args:
+    lr: 0.0002
+    lr_step_size: 11
+
+ckpt_path: null

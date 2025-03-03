@@ -1,0 +1,66 @@
+data:
+  class_path: pl_modules.DataModule
+  init_args:
+    slice_dataset: data.FastmriSliceDataset
+    data_path: /gpfs/home/bingyx01/mridatasets/fm-brain
+    challenge: multicoil
+    train_transform:
+      class_path: data.FastmriDataTransform
+      init_args:
+        mask_func:
+          class_path: data.RandomMaskFunc
+          init_args:
+            center_fractions:
+            - 0.08 
+            - 0.04
+            accelerations:
+            - 4
+            - 8
+            allow_any_combination: false
+        uniform_resolution:
+        - 384
+        - 384
+        use_seed: false
+    val_transform:
+      class_path: data.FastmriDataTransform
+      init_args:
+        mask_func:
+          class_path: data.RandomMaskFunc
+          init_args:
+            center_fractions:
+            - 0.08 
+            - 0.04
+            accelerations:
+            - 4
+            - 8
+            allow_any_combination: false
+        uniform_resolution:
+        - 384
+        - 384
+        use_seed: True
+    combine_train_val: false
+    num_adj_slices: 5
+    batch_size: 1
+    distributed_sampler: true
+    use_dataset_cache_file: false
+
+# dataset specific settings
+trainer:
+  devices: 2
+  num_nodes: 1
+  max_epochs: 45
+  logger: 
+    class_path: lightning.pytorch.loggers.WandbLogger
+    init_args:
+      save_dir: exp/fm-brain/pmr-plus # path to save experiment and checkpoint 
+      tags: [fastmri-brain]
+      name: fm-brain-pmr-plus
+
+model:
+  class_path: pl_modules.PromptMrModule
+  init_args:
+    lr: 0.0001
+    lr_step_size: 35
+
+ckpt_path: null # add the path to the checkpoint if you want to resume training
+

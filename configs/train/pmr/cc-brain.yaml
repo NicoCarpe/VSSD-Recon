@@ -1,0 +1,61 @@
+data:
+  class_path: pl_modules.DataModule
+  init_args:
+    slice_dataset: data.CalgaryCampinasSliceDataset
+    data_path: /gpfs/home/bingyx01/mridatasets/cc-brain
+    challenge: multicoil
+    train_transform:
+      class_path: data.CalgaryCampinasDataTransform
+      init_args:
+        mask_func:
+          class_path: data.PoissonDiscMaskFunc
+          init_args:
+            center_radii:
+            - 18
+            accelerations: 
+            - 5
+            - 10
+            allow_any_combination: true
+            mask_path: /gpfs/home/bingyx01/mridatasets/cc-brain/poisson_sampling
+        uniform_resolution: null
+        use_seed: false
+    val_transform:
+      class_path: data.CalgaryCampinasDataTransform
+      init_args:
+        mask_func:
+          class_path: data.PoissonDiscMaskFunc
+          init_args:
+            center_radii:
+            - 18
+            accelerations:
+            - 5
+            - 10
+            allow_any_combination: true
+            mask_path: /gpfs/home/bingyx01/mridatasets/cc-brain/poisson_sampling
+        uniform_resolution: null
+        use_seed: True
+    combine_train_val: false
+    num_adj_slices: 5
+    batch_size: 1
+    distributed_sampler: true
+    use_dataset_cache_file: false
+
+# dataset specific settings
+trainer:
+  devices: 2
+  num_nodes: 1
+  max_epochs: 20
+  logger: 
+    class_path: lightning.pytorch.loggers.WandbLogger
+    init_args:
+      save_dir:  exp/cc-brain/pmr # path to save experiment and checkpoint 
+      tags: [cc-brain]
+      name: cc-brain-pmr
+      
+model:
+  class_path: pl_modules.PromptMrModule
+  init_args:
+    lr: 0.0002
+    lr_step_size: 19
+
+ckpt_path: null

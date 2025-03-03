@@ -1,0 +1,52 @@
+data:
+  class_path: pl_modules.DataModule
+  init_args:
+    slice_dataset: data.CmrxReconSliceDataset
+    data_path: /gpfs/home/bingyx01/mridatasets/cmrxrecon2024
+    challenge: multicoil
+    train_transform:
+      class_path: data.CmrxReconDataTransform
+      init_args:
+        mask_type: 'dummy'
+    val_transform:
+      class_path: data.CmrxReconDataTransform
+      init_args:
+        mask_func:
+          class_path: data.CmrxRecon24TestValMaskFunc
+          init_args:
+            num_low_frequencies: 
+            - 16
+            num_adj_slices: &n_adj_slc 5
+            mask_path: /gpfs/home/bingyx01/mridatasets/cmrxrecon2024/mask/mask_radial.h5
+            test_mask_type: 'uniform'
+            test_acc: 10
+        uniform_resolution: null
+        use_seed: True
+    combine_train_val: false
+    num_adj_slices: *n_adj_slc
+    batch_size: 1
+    distributed_sampler: false
+    use_dataset_cache_file: false
+    val_filter: 
+      class_path: data.FuncFilterString
+      init_args:
+        filter_str: null #[cine_lax]
+
+# dataset specific settings
+seed_everything: 42
+trainer:
+  accelerator: gpu
+  strategy: ddp
+  devices: 1
+  num_nodes: 1
+  logger: False
+  callbacks:
+    -
+      class_path: __main__.CustomWriter
+      init_args:
+        output_dir: _predict/cmrxrecon24/test_val_plus/uniform_10
+        write_interval: batch_and_epoch
+model:
+  class_path: pl_modules.PromptMrModule
+
+ckpt_path: weights/cmr24-cardiac/promptmr-plus-epoch=11-step=337764.ckpt

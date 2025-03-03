@@ -1,0 +1,53 @@
+data:
+  class_path: pl_modules.InferenceDataModule
+  init_args:
+    slice_dataset: data.CmrxReconInferenceSliceDataset
+    data_path: /gpfs/home/bingyx01/mridatasets/cmrxrecon2023/validationset/undersample
+    challenge: multicoil
+    test_transform:
+      class_path: data.CmrxReconDataTransform
+      init_args:
+        mask_func: null
+        uniform_resolution: null
+        mask_type: 'cartesian'
+        test_num_low_frequencies: -1
+    num_adj_slices: &n_adj_slc 5
+    batch_size: 1
+    distributed_sampler: true 
+    test_filter: 
+      class_path: data.FuncFilterString
+      init_args:
+        filter_str: null #Cine/AccFactor10/P001/cine_lax.mat
+
+# dataset specific settings
+seed_everything: 42
+trainer:
+  accelerator: gpu
+  strategy: ddp
+  devices: 4
+  num_nodes: 1
+  logger: False
+  callbacks:
+    -
+      class_path: __main__.CustomWriter
+      init_args:
+        output_dir: _predict/cmr23-cardiac/test
+        write_interval: batch_and_epoch
+model:
+  class_path: pl_modules.PromptMrModule
+  init_args:
+    num_cascades: 12
+    num_adj_slices: *n_adj_slc
+    n_feat0: 48
+    feature_dim: [72,96,120]
+    prompt_dim: [24,48,72]
+    sens_n_feat0: 24
+    sens_feature_dim: [36,48,60]
+    sens_prompt_dim: [12,24,36]
+    len_prompt: [5,5,5]
+    prompt_size: [64,32,16]
+    n_enc_cab: [2,3,3]
+    n_dec_cab: [2,2,3]
+    n_skip_cab: [1,1,1]
+    n_bottleneck_cab: 3
+ckpt_path: weights/cmr23-cardiac/promptmr-epoch=11-step=258576.ckpt
