@@ -155,19 +155,22 @@ class PatchEmbed2D(nn.Module):
         super().__init__()
         if isinstance(patch_size, int):
             patch_size = (patch_size, patch_size)
-        self.proj = nn.Conv2d(in_chans, embed_dim, kernel_size=patch_size, stride=patch_size)
-        if norm_layer is not None:
-            self.norm = norm_layer(embed_dim)
-        else:
-            self.norm = None
+        # Projects each non‑overlapping patch into an embed_dim vector
+        self.proj = nn.Conv2d(in_chans, embed_dim,
+                              kernel_size=patch_size,
+                              stride=patch_size)
+        # Optional normalization (e.g. LayerNorm) on the embedding dimension
+        self.norm = norm_layer(embed_dim) if norm_layer else None
 
     def forward(self, x):
-        x = self.proj(x).permute(0, 2, 3, 1)
-        if self.norm is not None:
-            x = self.norm(x)
+        # x: [B, in_chans, H, W]
+        x = self.proj(x)                  # → [B, embed_dim, H/ps, W/ps]
+        x = x.permute(0, 2, 3, 1)         # → [B, H/ps, W/ps, embed_dim]
+        if self.norm:
+            x = self.norm(x)              # normalize along embed_dim
         return x
 
-
+# TODO 深度理解这个merging 的意义
 class PatchMerging2D(nn.Module):
     r""" Patch Merging Layer.
     Args:
@@ -179,6 +182,7 @@ class PatchMerging2D(nn.Module):
     def __init__(self, dim, norm_layer=nn.LayerNorm):
         super().__init__()
         self.dim = dim
+        # After concatenating 4 neighbor patches, reduce from 4*dim → 2*dim
         self.reduction = nn.Linear(4 * dim, 2 * dim, bias=False)
         self.norm = norm_layer(4 * dim)
 
@@ -191,6 +195,7 @@ class PatchMerging2D(nn.Module):
             SHAPE_FIX[0] = H // 2
             SHAPE_FIX[1] = W // 2
 
+        # split into four sub‑grids (2×2)
         x0 = x[:, 0::2, 0::2, :]  # B H/2 W/2 C
         x1 = x[:, 1::2, 0::2, :]  # B H/2 W/2 C
         x2 = x[:, 0::2, 1::2, :]  # B H/2 W/2 C
@@ -202,49 +207,61 @@ class PatchMerging2D(nn.Module):
             x2 = x2[:, :SHAPE_FIX[0], :SHAPE_FIX[1], :]
             x3 = x3[:, :SHAPE_FIX[0], :SHAPE_FIX[1], :]
         
+        # cat along the channel dimension → [B, H/2, W/2, 4*C]
         x = torch.cat([x0, x1, x2, x3], -1)  # B H/2 W/2 4*C
         x = x.view(B, H//2, W//2, 4 * C)  # B H/2*W/2 4*C
 
-        x = self.norm(x)
-        x = self.reduction(x)
+        x = self.norm(x)        # normalize 4*C
+        x = self.reduction(x)   # project 4*C → 2*C
 
-        return x
+        return x                # [B, H/2, W/2, 2*C]
     
 
 class PatchExpand2D(nn.Module):
     def __init__(self, dim, dim_scale=2, norm_layer=nn.LayerNorm):
         super().__init__()
-        self.dim = dim*2
-        self.dim_scale = dim_scale
-        self.expand = nn.Linear(self.dim, dim_scale*self.dim, bias=False)
-        self.norm = norm_layer(self.dim // dim_scale)
+        # When upsampling, we first increase channels from dim → dim_scale*dim
+        self.expand    = nn.Linear(dim * dim_scale, dim_scale * dim, bias=False)
+        self.norm      = norm_layer(dim)
 
     def forward(self, x):
+        # x: [B, H, W, C]
         B, H, W, C = x.shape
-        x = self.expand(x)
+        # project C → dim_scale * C
+        x = self.expand(x)           # → [B, H, W, p1*p2*C] where p1=p2=dim_scale
 
-        x = rearrange(x, 'b h w (p1 p2 c)-> b (h p1) (w p2) c', p1=self.dim_scale, p2=self.dim_scale, c=C//self.dim_scale)
-        x= self.norm(x)
-
-        return x
+        # rearrange so that channels become extra spatial dims:
+        #   from [B, H, W, (p1*p2*C)] → [B, H*p1, W*p2, C]
+        x = rearrange(x,
+                      'b h w (p1 p2 c) -> b (h p1) (w p2) c',
+                      p1=self.norm.normalized_shape[0]//C if False else self.dim_scale,
+                      p2=self.dim_scale,
+                      c=C)
+        x = self.norm(x)             # normalize over C
+        return x                     # [B, H*2, W*2, C]
     
 
 class Final_PatchExpand2D(nn.Module):
     def __init__(self, dim, dim_scale=4, norm_layer=nn.LayerNorm):
         super().__init__()
-        self.dim = dim
+        # Similar to PatchExpand2D but with a larger scale (e.g. 4×)
+        self.expand    = nn.Linear(dim, dim_scale * dim, bias=False)
+        self.norm      = norm_layer(dim)
         self.dim_scale = dim_scale
-        self.expand = nn.Linear(self.dim, dim_scale*self.dim, bias=False)
-        self.norm = norm_layer(self.dim // dim_scale)
+        self.dim       = dim
 
     def forward(self, x):
+        # x: [B, H, W, C]
         B, H, W, C = x.shape
-        x = self.expand(x)
-
-        x = rearrange(x, 'b h w (p1 p2 c)-> b (h p1) (w p2) c', p1=self.dim_scale, p2=self.dim_scale, c=C//self.dim_scale)
-        x= self.norm(x)
-
-        return x
+        x = self.expand(x)            # [B, H, W, scale² * C]
+        # pixel‑shuffle to [B, H*scale, W*scale, C]
+        x = rearrange(x,
+                      'b h w (p1 p2 c) -> b (h p1) (w p2) c',
+                      p1=self.dim_scale,
+                      p2=self.dim_scale,
+                      c=C)
+        x = self.norm(x)              # normalize over C
+        return x                      # [B, H*4, W*4, C]
 
 
 class SS2D(nn.Module):
@@ -375,15 +392,7 @@ class SS2D(nn.Module):
         D._no_weight_decay = True
         return D
 
-    def forward(self, x: torch.Tensor, **kwargs):
-        B, H, W, C = x.shape
-
-        xz = self.in_proj(x)
-        x, z = xz.chunk(2, dim=-1) # (b, h, w, d)
-
-        x = x.permute(0, 3, 1, 2).contiguous()
-        x = self.act(self.conv2d(x)) # (b, d, h, w)
-
+    def forward_corev0(self, x: torch.Tensor):
         self.selective_scan = selective_scan_fn
         
         B, C, H, W = x.shape
@@ -420,8 +429,56 @@ class SS2D(nn.Module):
         wh_y = torch.transpose(out_y[:, 1].view(B, -1, W, H), dim0=2, dim1=3).contiguous().view(B, -1, L)
         invwh_y = torch.transpose(inv_y[:, 1].view(B, -1, W, H), dim0=2, dim1=3).contiguous().view(B, -1, L)
 
-        y1, y2, y3, y4 = out_y[:, 0], inv_y[:, 0], wh_y, invwh_y
+        return out_y[:, 0], inv_y[:, 0], wh_y, invwh_y
 
+    # an alternative to forward_corev1
+    def forward_corev1(self, x: torch.Tensor):
+        self.selective_scan = selective_scan_fn_v1
+
+        B, C, H, W = x.shape
+        L = H * W
+        K = 4
+
+        x_hwwh = torch.stack([x.view(B, -1, L), torch.transpose(x, dim0=2, dim1=3).contiguous().view(B, -1, L)], dim=1).view(B, 2, -1, L)
+        xs = torch.cat([x_hwwh, torch.flip(x_hwwh, dims=[-1])], dim=1) # (b, k, d, l)
+
+        x_dbl = torch.einsum("b k d l, k c d -> b k c l", xs.view(B, K, -1, L), self.x_proj_weight)
+        # x_dbl = x_dbl + self.x_proj_bias.view(1, K, -1, 1)
+        dts, Bs, Cs = torch.split(x_dbl, [self.dt_rank, self.d_state, self.d_state], dim=2)
+        dts = torch.einsum("b k r l, k d r -> b k d l", dts.view(B, K, -1, L), self.dt_projs_weight)
+        # dts = dts + self.dt_projs_bias.view(1, K, -1, 1)
+
+        xs = xs.float().view(B, -1, L) # (b, k * d, l)
+        dts = dts.contiguous().float().view(B, -1, L) # (b, k * d, l)
+        Bs = Bs.float().view(B, K, -1, L) # (b, k, d_state, l)
+        Cs = Cs.float().view(B, K, -1, L) # (b, k, d_state, l)
+        Ds = self.Ds.float().view(-1) # (k * d)
+        As = -torch.exp(self.A_logs.float()).view(-1, self.d_state)  # (k * d, d_state)
+        dt_projs_bias = self.dt_projs_bias.float().view(-1) # (k * d)
+
+        out_y = self.selective_scan(
+            xs, dts, 
+            As, Bs, Cs, Ds,
+            delta_bias=dt_projs_bias,
+            delta_softplus=True,
+        ).view(B, K, -1, L)
+        assert out_y.dtype == torch.float
+
+        inv_y = torch.flip(out_y[:, 2:4], dims=[-1]).view(B, 2, -1, L)
+        wh_y = torch.transpose(out_y[:, 1].view(B, -1, W, H), dim0=2, dim1=3).contiguous().view(B, -1, L)
+        invwh_y = torch.transpose(inv_y[:, 1].view(B, -1, W, H), dim0=2, dim1=3).contiguous().view(B, -1, L)
+
+        return out_y[:, 0], inv_y[:, 0], wh_y, invwh_y
+
+    def forward(self, x: torch.Tensor, **kwargs):
+        B, H, W, C = x.shape
+
+        xz = self.in_proj(x)
+        x, z = xz.chunk(2, dim=-1) # (b, h, w, d)
+
+        x = x.permute(0, 3, 1, 2).contiguous()
+        x = self.act(self.conv2d(x)) # (b, d, h, w)
+        y1, y2, y3, y4 = self.forward_core(x)
         assert y1.dtype == torch.float32
         y = y1 + y2 + y3 + y4
         y = torch.transpose(y, dim0=1, dim1=2).contiguous().view(B, H, W, -1)
@@ -602,7 +659,7 @@ class VSSM(nn.Module):
         self.patch_embed = PatchEmbed2D(patch_size=patch_size, in_chans=in_chans, embed_dim=self.embed_dim,
             norm_layer=norm_layer if patch_norm else None)
 
-        # WASTED absolute position embedding ======================
+        # WASTED absolute position embedding vit 里面有 ======================
         self.ape = False
         # self.ape = False
         # drop_rate = 0.0
@@ -611,18 +668,18 @@ class VSSM(nn.Module):
             self.absolute_pos_embed = nn.Parameter(torch.zeros(1, *self.patches_resolution, self.embed_dim))
             trunc_normal_(self.absolute_pos_embed, std=.02)
         self.pos_drop = nn.Dropout(p=drop_rate)
-
+        # 采用随机深度 drp rate
         dpr = [x.item() for x in torch.linspace(0, drop_path_rate, sum(depths))]  # stochastic depth decay rule
         dpr_decoder = [x.item() for x in torch.linspace(0, drop_path_rate, sum(depths_decoder))][::-1]
 
         self.layers = nn.ModuleList()
-        for i_layer in range(self.num_layers):
+        for i_layer in range(self.num_layers): # 4 层
             layer = VSSLayer(
                 dim=dims[i_layer],
                 depth=depths[i_layer],
                 d_state=math.ceil(dims[0] / 6) if d_state is None else d_state, # 20240109
-                drop=drop_rate, 
-                attn_drop=attn_drop_rate,
+                drop=drop_rate,  # 0
+                attn_drop=attn_drop_rate, # 0
                 drop_path=dpr[sum(depths[:i_layer]):sum(depths[:i_layer + 1])],
                 norm_layer=norm_layer,
                 downsample=PatchMerging2D if (i_layer < self.num_layers - 1) else None,
@@ -630,23 +687,23 @@ class VSSM(nn.Module):
             )
             self.layers.append(layer)
 
-        self.layers_up = nn.ModuleList()
-        for i_layer in range(self.num_layers):
-            layer = VSSLayer_up(
-                dim=dims_decoder[i_layer],
-                depth=depths_decoder[i_layer],
-                d_state=math.ceil(dims[0] / 6) if d_state is None else d_state, # 20240109
-                drop=drop_rate, 
-                attn_drop=attn_drop_rate,
-                drop_path=dpr_decoder[sum(depths_decoder[:i_layer]):sum(depths_decoder[:i_layer + 1])],
-                norm_layer=norm_layer,
-                upsample=PatchExpand2D if (i_layer != 0) else None,
-                use_checkpoint=use_checkpoint,
-            )
-            self.layers_up.append(layer)
+        # self.layers_up = nn.ModuleList()
+        # for i_layer in range(self.num_layers):
+        #     layer = VSSLayer_up(
+        #         dim=dims_decoder[i_layer],
+        #         depth=depths_decoder[i_layer],
+        #         d_state=math.ceil(dims[0] / 6) if d_state is None else d_state, # 20240109
+        #         drop=drop_rate, 
+        #         attn_drop=attn_drop_rate,
+        #         drop_path=dpr_decoder[sum(depths_decoder[:i_layer]):sum(depths_decoder[:i_layer + 1])],
+        #         norm_layer=norm_layer,
+        #         upsample=PatchExpand2D if (i_layer != 0) else None,
+        #         use_checkpoint=use_checkpoint,
+        #     )
+        #     self.layers_up.append(layer)
 
-        self.final_up = Final_PatchExpand2D(dim=dims_decoder[-1], dim_scale=4, norm_layer=norm_layer)
-        self.final_conv = nn.Conv2d(dims_decoder[-1]//4, num_classes, 1)
+        # self.final_up = Final_PatchExpand2D(dim=dims_decoder[-1], dim_scale=4, norm_layer=norm_layer)
+        # self.final_conv = nn.Conv2d(dims_decoder[-1]//4, num_classes, 1)
 
         # self.norm = norm_layer(self.num_features)
         # self.avgpool = nn.AdaptiveAvgPool1d(1)
@@ -679,31 +736,31 @@ class VSSM(nn.Module):
     def no_weight_decay_keywords(self):
         return {'relative_position_bias_table'}
 
-    def forward_features(self, x):
+    def forward_features(self, x): # x [1, 3, 256, 256]
         skip_list = []
-        x = self.patch_embed(x)
-        if self.ape:
+        x = self.patch_embed(x) # x [1, 64, 64, 96]  , dims=[96, 192, 384, 768]
+        if self.ape: # absolute position embedding vit
             x = x + self.absolute_pos_embed
-        x = self.pos_drop(x)
-
-        for layer in self.layers:
-            skip_list.append(x)
-            x = layer(x)
-        return x, skip_list
+        x = self.pos_drop(x) # 这里的drop_rate = 0
+        # 返回最下面的 x feature 和 中间的四步的 feature
+        for layer in self.layers: 
+            skip_list.append(x) # x [1, 96, 64, 64]
+            x = layer(x) # x encoder 的最终输出
+        return x, skip_list # x [1, 8, 8, 768] , len(skip_list) = 4 , skip_list[0] [1, 64, 64, 96]
     
     def forward_features_up(self, x, skip_list):
-        for inx, layer_up in enumerate(self.layers_up):
+        for inx, layer_up in enumerate(self.layers_up): # x [1, 8, 8, 768]
             if inx == 0:
                 x = layer_up(x)
             else:
                 x = layer_up(x+skip_list[-inx])
 
-        return x
+        return x # [1, 64, 64, 96]
     
-    def forward_final(self, x):
-        x = self.final_up(x)
-        x = x.permute(0,3,1,2)
-        x = self.final_conv(x)
+    def forward_final(self, x): # x [1, 64, 64, 96]
+        x = self.final_up(x) # x [1, 256, 256, 24]
+        x = x.permute(0,3,1,2) # x [1, 24, 256, 256]
+        x = self.final_conv(x) # x [1, 1, 256, 256]
         return x
 
     def forward_backbone(self, x):
@@ -716,12 +773,16 @@ class VSSM(nn.Module):
             x = layer(x)
         return x
 
-    def forward(self, x):
-        x, skip_list = self.forward_features(x)
+    def forward_bak(self, x):
+        x, skip_list = self.forward_features(x)  # skip_list[0] [2, 64, 64, 96]   [3]  [2, 8, 8, 768]
         x = self.forward_features_up(x, skip_list)
         x = self.forward_final(x)
         
         return x
+    # modified by sim  to sdi module
+    def forward(self, x):
+        x, skip_list = self.forward_features(x)  # skip_list[0] [2, 64, 64, 96]   [3]  [2, 8, 8, 768]        
+        return skip_list[0], skip_list[1], skip_list[2], skip_list[3]
 
 
 
