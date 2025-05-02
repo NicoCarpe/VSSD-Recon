@@ -9,7 +9,7 @@ import torch.nn.functional as F
 from einops import rearrange
 
 from data import transforms
-from .MambaBlock2D import MambaBlock2D
+from VSSBlock import VSSBlock
 
 
 ##########################################################################
@@ -42,43 +42,24 @@ class PromptBlock(nn.Module):
 # ---------- Down Block -----------------------
 
 class DownBlock(nn.Module):
-    def __init__(self, in_dim, out_dim, n_block, kernel_size, bias, act, first_act=True):
+    def __init__(self, in_dim, d_state, n_block, bias, dropout):
         super().__init__()
-        if first_act:
-            self.encoder = [
-                MambaBlock2D(
-                    d_model=in_dim,
-                    d_conv=kernel_size,
-                    activation=nn.PReLU(),
-                    bias=bias
-                )]
-            self.encoder = nn.Sequential(*[
-                MambaBlock2D(
-                    d_model=in_dim,
-                    d_conv=kernel_size,
-                    activation=act,
-                    bias=bias
-                ) for _ in range(n_block-1)
-            ])
-        else:
-            self.encoder = nn.Sequential(*[
-                MambaBlock2D(
-                    d_model=in_dim,
-                    d_conv=kernel_size,
-                    activation=act,
-                    bias=bias
-                ) for _ in range(n_block)
-            ])
+
+        self.encoder = nn.Sequential(*[
+            VSSBlock(
+                hidden_dim=in_dim,
+                d_state = d_state,
+                drop_path = dropout,
+                bias = bias
+            ) for _ in range(n_block)
+        ])
         
         self.down = PatchMerge(dim=in_dim, norm_layer=nn.LayerNorm)
 
     def forward(self, x):
         enc = self.encoder(x)  # Shape: (B, C, H, W)
-        # Permute to channel-last for PatchMerge
-        enc_permuted = enc.permute(0, 2, 3, 1)  # (B, H, W, C)
-        x_down = self.down(enc_permuted)  # (B, H//2, W//2, 2*C)
-        # Permute back to channel-first
-        x_down = x_down.permute(0, 3, 1, 2)  # (B, 2*C, H//2, W//2)
+        x_down = self.down(enc)  # (B, H//2, W//2, 2*C)
+
         return x_down, enc  # enc is (B, C, H, W) for skip connection
 
 
@@ -86,27 +67,27 @@ class DownBlock(nn.Module):
 # ---------- Up Block -----------------------
 
 class UpBlock(nn.Module):
-    def __init__(self, in_dim, out_dim, prompt_dim, n_block, kernel_size, bias, act, n_history=0):
+    def __init__(self, in_dim, d_state, prompt_dim, n_block, bias, dropout, n_history=0):
         super().__init__()
         # momentum layer
         self.n_history = n_history
         if n_history > 0:
             self.momentum = nn.Sequential(
                 nn.Conv2d(in_dim*(n_history+1), in_dim, kernel_size=1, bias=bias),
-                MambaBlock2D(
-                    d_model=in_dim,
-                    d_conv=kernel_size,
-                    activation=act,
-                    bias=bias
+                VSSBlock(
+                    hidden_dim=in_dim,
+                    d_state = d_state,
+                    drop_path = dropout,
+                    bias = bias
                 )
             )
 
         self.fuse = nn.Sequential(*[
-            MambaBlock2D(
-                d_model=in_dim+prompt_dim,
-                d_conv=kernel_size,
-                activation=act,
-                bias=bias
+            VSSBlock(
+                hidden_dim=in_dim+prompt_dim,
+                d_state = d_state,
+                drop_path = dropout,
+                bias = bias
             ) for _ in range(n_block)
         ])
         self.reduce = nn.Conv2d(in_dim+prompt_dim, in_dim, kernel_size=1, bias=bias)
@@ -114,11 +95,11 @@ class UpBlock(nn.Module):
         self.up = PatchExpand(dim=in_dim, dim_scale=2, norm_layer=nn.LayerNorm)
 
         # why this one
-        self.ca = MambaBlock2D(
-                d_model=out_dim,
-                d_conv=kernel_size,
-                activation=act,
-                bias=bias
+        self.ca = VSSBlock(
+                hidden_dim=in_dim,
+                d_state = d_state,
+                drop_path = dropout,
+                bias = bias
             )
 
     def forward(self, x, prompt_dec, skip, history_feat: Optional[torch.Tensor] = None):
@@ -135,12 +116,9 @@ class UpBlock(nn.Module):
         x = self.fuse(x)
         x = self.reduce(x)
 
-        # Permute for PatchExpand (B, C, H, W) -> (B, H, W, C)
-        x_permuted = x.permute(0, 2, 3, 1)
-        x_up = self.up(x_permuted)  # (B, 2H, 2W, C_out)
-        # Permute back to (B, C_out, 2H, 2W)
-        x_up = x_up.permute(0, 3, 1, 2)
-        x = x_up + skip  # Ensure skip has shape (B, C_out, 2H, 2W)
+        x_up = self.up(x) 
+        
+        x = x_up + skip  # (B, C_out, 2H, 2W)
         x = self.ca(x)
 
         return x
@@ -150,17 +128,17 @@ class UpBlock(nn.Module):
 # ---------- Skip Block -----------------------
 
 class SkipBlock(nn.Module):
-    def __init__(self, enc_dim, n_cab, kernel_size, reduction, bias, act, no_use_ca=False):
+    def __init__(self, enc_dim, d_state, n_cab, bias, dropout):
         super().__init__()
         if n_cab == 0:
             self.skip_attn = nn.Identity()
         else:
             self.skip_attn = nn.Sequential(*[
-                MambaBlock2D(
-                    d_model=enc_dim,
-                    d_conv=kernel_size,
-                    activation=act,
-                    bias=bias
+                VSSBlock(
+                    hidden_dim=enc_dim,
+                    d_state = d_state,
+                    drop_path = dropout,
+                    bias = bias
                 ) for _ in range(n_cab)
             ])
 
@@ -265,135 +243,162 @@ class KspaceACSExtractor:
             return masked_kspace
 
 
+import torch
+import torch.nn as nn
+from einops import rearrange
+
 ##########################################################################
 # -------- Patch Embed -----------------------
 
 class PatchEmbed(nn.Module):
     r""" Image to Patch Embedding
     Args:
-        patch_size (int): Patch token size. Default: 4.
-        in_chans (int): Number of input image channels. Default: 3.
-        embed_dim (int): Number of linear projection output channels. Default: 96.
-        norm_layer (nn.Module, optional): Normalization layer. Default: None
+        patch_size (int): size of each patch (patch_size x patch_size)
+        in_chans (int): number of input channels
+        embed_dim (int): number of output embedding channels
+        norm_layer (nn.Module, optional): normalization layer applied to embeddings
     """
-    # TODO: in_chans and embedding dim might not be correct here
     def __init__(self, patch_size=4, in_chans=3, embed_dim=96, norm_layer=None, **kwargs):
         super().__init__()
         if isinstance(patch_size, int):
             patch_size = (patch_size, patch_size)
-        # Projects each non‑overlapping patch into an embed_dim vector
+        # project non-overlapping patches to embed_dim channels
         self.proj = nn.Conv2d(in_chans, embed_dim,
                               kernel_size=patch_size,
                               stride=patch_size)
-        # Optional normalization (e.g. LayerNorm) on the embedding dimension
+        # optional normalization over embedding dimension
         self.norm = norm_layer(embed_dim) if norm_layer else None
 
     def forward(self, x):
         # x: [B, in_chans, H, W]
-        x = self.proj(x)                  # → [B, embed_dim, H/ps, W/ps]
-        x = x.permute(0, 2, 3, 1)         # → [B, H/ps, W/ps, embed_dim]
+        x = self.proj(x)                  # → [B, embed_dim, H/patch_size, W/patch_size]
         if self.norm:
-            x = self.norm(x)              # normalize along embed_dim
-        return x
-    
+            x = x.permute(0, 2, 3, 1).contiguous()  # → [B, H/ps, W/ps, embed_dim]
+            x = self.norm(x)             # normalize along embedding dim
+            x = x.permute(0, 3, 1, 2).contiguous()  # → [B, embed_dim, H/ps, W/ps]
+        return x                         # [B, embed_dim, H/ps, W/ps]
+
 
 ##########################################################################
 # -------- Patch Merge -----------------------
 
 class PatchMerge(nn.Module):
-    r""" Patch Merging Layer.
+    r""" Patch Merging Layer: downsample spatial dims by 2 and increase channels by 2x.
     Args:
-        input_resolution (tuple[int]): Resolution of input feature.
-        dim (int): Number of input channels.
-        norm_layer (nn.Module, optional): Normalization layer.  Default: nn.LayerNorm
+        dim (int): number of input channels
+        norm_layer (nn.Module, optional): normalization layer applied before reduction
     """
-
     def __init__(self, dim, norm_layer=nn.LayerNorm):
         super().__init__()
-        self.dim = dim
-        # After concatenating 4 neighbor patches, reduce from 4*dim → 2*dim
+        # combine 2x2 neighbors: 4*dim channels → reduce to 2*dim
         self.reduction = nn.Linear(4 * dim, 2 * dim, bias=False)
         self.norm = norm_layer(4 * dim)
 
     def forward(self, x):
+        # x: [B, C, H, W]
+        x = x.permute(0, 2, 3, 1).contiguous()  # → [B, H, W, C]
         B, H, W, C = x.shape
 
-        SHAPE_FIX = [-1, -1]
-        if (W % 2 != 0) or (H % 2 != 0):
-            print(f"Warning, x.shape {x.shape} is not match even ===========", flush=True)
-            SHAPE_FIX[0] = H // 2
-            SHAPE_FIX[1] = W // 2
+        # split into 2x2 patches
+        x0 = x[:, 0::2, 0::2, :]  # [B, H/2, W/2, C]
+        x1 = x[:, 1::2, 0::2, :]  # [B, H/2, W/2, C]
+        x2 = x[:, 0::2, 1::2, :]  # [B, H/2, W/2, C]
+        x3 = x[:, 1::2, 1::2, :]  # [B, H/2, W/2, C]
 
-        # split into four sub‑grids (2×2)
-        x0 = x[:, 0::2, 0::2, :]  # B H/2 W/2 C
-        x1 = x[:, 1::2, 0::2, :]  # B H/2 W/2 C
-        x2 = x[:, 0::2, 1::2, :]  # B H/2 W/2 C
-        x3 = x[:, 1::2, 1::2, :]  # B H/2 W/2 C
+        # concatenate channel-wise: [B, H/2, W/2, 4*C]
+        x = torch.cat([x0, x1, x2, x3], dim=-1)
 
-        if SHAPE_FIX[0] > 0:
-            x0 = x0[:, :SHAPE_FIX[0], :SHAPE_FIX[1], :]
-            x1 = x1[:, :SHAPE_FIX[0], :SHAPE_FIX[1], :]
-            x2 = x2[:, :SHAPE_FIX[0], :SHAPE_FIX[1], :]
-            x3 = x3[:, :SHAPE_FIX[0], :SHAPE_FIX[1], :]
-        
-        # cat along the channel dimension → [B, H/2, W/2, 4*C]
-        x = torch.cat([x0, x1, x2, x3], -1)  # B H/2 W/2 4*C
-        x = x.view(B, H//2, W//2, 4 * C)  # B H/2*W/2 4*C
+        x = self.norm(x)             # normalize 4*C channels
+        x = self.reduction(x)        # project 4*C → 2*C
+        x = x.permute(0, 3, 1, 2).contiguous()  # → [B, 2*C, H/2, W/2]
 
-        x = self.norm(x)        # normalize 4*C
-        x = self.reduction(x)   # project 4*C → 2*C
+        return x                     # [B, 2*C, H/2, W/2]
 
-        return x                # [B, H/2, W/2, 2*C]
-    
 
 ##########################################################################
 # -------- Patch Expand -----------------------
 
 class PatchExpand(nn.Module):
+    r"""
+    Inverse of PatchMerge: upsamples spatial dims by dim_scale and halves channels.
+    Args:
+        dim (int): number of input channels
+        dim_scale (int): upsampling factor per spatial dimension
+        norm_layer (nn.Module, optional): normalization layer applied after rearrange
+    """
     def __init__(self, dim, dim_scale=2, norm_layer=nn.LayerNorm):
         super().__init__()
-        # When upsampling, we first increase channels from dim → dim_scale*dim
-        self.expand    = nn.Linear(dim * dim_scale, dim_scale * dim, bias=False)
-        self.norm      = norm_layer(dim)
+        self.dim_scale = dim_scale
+        self.dim = dim
+        # project C → (dim_scale^2 * C)
+        self.expand = nn.Linear(dim, dim_scale * dim, bias=False)
+        # normalize over output channels after halving
+        self.norm = norm_layer(dim // dim_scale)
 
     def forward(self, x):
-        # x: [B, H, W, C]
-        B, H, W, C = x.shape
-        # project C → dim_scale * C
-        x = self.expand(x)           # → [B, H, W, p1*p2*C] where p1=p2=dim_scale
+        # x: [B, C, H, W]
+        B, C, H, W = x.shape
 
-        # rearrange so that channels become extra spatial dims:
-        #   from [B, H, W, (p1*p2*C)] → [B, H*p1, W*p2, C]
-        x = rearrange(x,
-                      'b h w (p1 p2 c) -> b (h p1) (w p2) c',
-                      p1=self.norm.normalized_shape[0]//C if False else self.dim_scale,
-                      p2=self.dim_scale,
-                      c=C)
-        x = self.norm(x)             # normalize over C
-        return x                     # [B, H*2, W*2, C]
-    
+        # → [B, H, W, C]
+        x = x.permute(0, 2, 3, 1).contiguous()
+
+        # → [B, H, W, C * dim_scale]
+        x = self.expand(x)
+
+        # rearrange: split last axis into (dim_scale, dim_scale, C/dim_scale)
+        # and upscale spatial dims accordingly
+        x = rearrange(
+            x,
+            'b h w (p1 p2 c) -> b (h p1) (w p2) c',
+            p1=self.dim_scale,
+            p2=self.dim_scale,
+            c=C // self.dim_scale
+        )  # → [B, H*dim_scale, W*dim_scale, C/ dim_scale]
+
+        x = self.norm(x)  # normalize C/dim_scale channels
+
+        # → [B, C/ dim_scale, H*dim_scale, W*dim_scale]
+        return x.permute(0, 3, 1, 2).contiguous()
+
 
 ##########################################################################
 # -------- Final Projection -----------------------
 
 class FinalProjection(nn.Module):
+    r"""
+    Inverse of PatchEmbed: upsamples spatial dims by dim_scale and reduces channels by dim_scale.
+    Args:
+        dim (int): number of input channels
+        dim_scale (int): upsampling and channel reduction factor
+        norm_layer (nn.Module, optional): normalization layer applied after rearrange
+    """
     def __init__(self, dim, dim_scale=4, norm_layer=nn.LayerNorm):
         super().__init__()
-        # Similar to PatchExpand2D but with a larger scale (e.g. 4×)
-        self.expand    = nn.Linear(dim, dim_scale * dim, bias=False)
-        self.norm      = norm_layer(dim)
         self.dim_scale = dim_scale
-        self.dim       = dim
+        self.dim = dim
+        # project C → (dim_scale^2 * C)
+        self.expand = nn.Linear(dim, dim_scale * dim, bias=False)
+        # normalize over output channels after reduction
+        self.norm = norm_layer(dim // dim_scale)
 
     def forward(self, x):
-        # x: [B, H, W, C]
+        # x: [B, C, H, W]
+        x = x.permute(0, 2, 3, 1).contiguous()  # → [B, H, W, C]
         B, H, W, C = x.shape
-        x = self.expand(x)            # [B, H, W, scale² * C]
-        # pixel‑shuffle to [B, H*scale, W*scale, C]
-        x = rearrange(x,
-                      'b h w (p1 p2 c) -> b (h p1) (w p2) c',
-                      p1=self.dim_scale,
-                      p2=self.dim_scale,
-                      c=C)
-        x = self.norm(x)              # normalize over C
-        return x                      # [B, H*4, W*4, C]
+
+        # → [B, H, W, C * dim_scale]
+        x = self.expand(x)
+
+        # rearrange: split last axis into (dim_scale, dim_scale, C/dim_scale)
+        x = rearrange(
+            x,
+            'b h w (p1 p2 c) -> b (h p1) (w p2) c',
+            p1=self.dim_scale,
+            p2=self.dim_scale,
+            c=C // self.dim_scale
+        )  # → [B, H*dim_scale, W*dim_scale, C/dim_scale]
+
+        x = self.norm(x)  # normalize C/dim_scale channels
+
+        # → [B, C/dim_scale, H*dim_scale, W*dim_scale]
+        return x.permute(0, 3, 1, 2).contiguous()

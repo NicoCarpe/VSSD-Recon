@@ -5,8 +5,12 @@ import math
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from typing import Optional, Callable
+from functools import partial
 
 from einops import rearrange, repeat
+
+from timm.models.layers import DropPath
 
 from mamba_ssm.ops.triton.layernorm_gated import RMSNorm as RMSNormGated
 from mamba_ssm.ops.triton.ssd_combined import mamba_chunk_scan_combined, mamba_split_conv1d_scan_combined
@@ -15,8 +19,10 @@ try:
 except:
     from csm_triton import cross_scan_fn, cross_merge_fn
 
+DropPath.__repr__ = lambda self: f"timm.DropPath({self.drop_prob})"
 
-class MambaBlock2D(nn.Module):
+
+class SS2D(nn.Module):
     def __init__(
         self,
         d_model,        # NOTE: vmamba elects to use 96
@@ -281,3 +287,23 @@ class MambaBlock2D(nn.Module):
             out = self.dropout(self.out_proj(y))
 
         return out
+
+
+class VSSBlock(nn.Module):
+    def __init__(
+        self,
+        hidden_dim: int = 0,
+        drop_path: float = 0,
+        norm_layer: Callable[..., torch.nn.Module] = partial(nn.LayerNorm, eps=1e-6),
+        attn_drop_rate: float = 0,
+        d_state: int = 64,
+        **kwargs,
+    ):
+        super().__init__()
+        self.ln_1 = norm_layer(hidden_dim)
+        self.self_attention = SS2D(d_model=hidden_dim, d_state=d_state, dropout=attn_drop_rate, **kwargs)
+        self.drop_path = DropPath(drop_path)
+
+    def forward(self, input: torch.Tensor):
+        x = input + self.drop_path(self.self_attention(self.ln_1(input)))
+        return x

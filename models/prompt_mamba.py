@@ -8,8 +8,8 @@ from torch import nn
 import torch.nn.functional as F
 from einops import rearrange
 from mri_utils import ifft2c, rss, complex_abs, rss_complex, sens_expand, sens_reduce
-from .utils_mamba import KspaceACSExtractor, DownBlock, UpBlock, SkipBlock, PromptBlock, PatchEmbed, FinalProjection
-from .MambaBlock2D import MambaBlock2D
+from utils_mamba import KspaceACSExtractor, DownBlock, UpBlock, SkipBlock, PromptBlock, PatchEmbed, FinalProjection
+from VSSBlock import VSSBlock
 
 
 class PromptUnet(nn.Module): 
@@ -25,13 +25,11 @@ class PromptUnet(nn.Module):
                  n_dec_cab: List[int],
                  n_skip_cab: List[int],
                  n_bottleneck_cab: int,
-                 kernel_size=3,
-                 reduction=4,
-                 act=nn.PReLU(),
                  bias=False,
-                 no_use_ca=False,
                  learnable_prompt=False,
                  adaptive_input=False,
+                 d_state=16,
+                 dropout=0,
                  n_buffer=0,
                  n_history=0,
                  ):
@@ -44,80 +42,104 @@ class PromptUnet(nn.Module):
         out_chans = out_chans * (1+self.n_buffer) if adaptive_input else in_chans 
         
         # Patch Embedding
-        self.patch_embed = PatchEmbed(patch_size=3, in_chans=in_chans, embed_dim=n_feat0)
+        self.patch_embed = PatchEmbed(patch_size=4, in_chans=in_chans, embed_dim=n_feat0)
         
         # Encoder - 3 DownBlocks
-        self.enc_level1 = DownBlock(n_feat0, feature_dim[0], n_enc_cab[0], kernel_size, bias, act, first_act=True)
-        self.enc_level2 = DownBlock(feature_dim[0], feature_dim[1], n_enc_cab[1], kernel_size, bias, act)
-        self.enc_level3 = DownBlock(feature_dim[1], feature_dim[2], n_enc_cab[2], kernel_size, bias, act)
+        self.enc_level1 = DownBlock(n_feat0, d_state, n_enc_cab[0], bias, dropout)
+        self.enc_level2 = DownBlock(feature_dim[0], d_state, n_enc_cab[1], bias, dropout)
+        self.enc_level3 = DownBlock(feature_dim[1], d_state, n_enc_cab[2],  bias, dropout)
 
         # Skip Connections - 3 SkipBlocks
-        self.skip_attn1 = SkipBlock(n_feat0, n_skip_cab[0], kernel_size, bias, act)
-        self.skip_attn2 = SkipBlock(feature_dim[0], n_skip_cab[1], kernel_size, bias, act)
-        self.skip_attn3 = SkipBlock(feature_dim[1], n_skip_cab[2], kernel_size, bias, act)
+        self.skip_attn1 = SkipBlock(n_feat0, d_state, n_skip_cab[0], bias, dropout)
+        self.skip_attn2 = SkipBlock(feature_dim[0], d_state, n_skip_cab[1], bias, dropout)
+        self.skip_attn3 = SkipBlock(feature_dim[1], d_state, n_skip_cab[2], bias, dropout)
 
         # Bottleneck 
         self.bottleneck = nn.Sequential(*[
-            MambaBlock2D(
-                d_model=feature_dim[2],
-                d_conv=kernel_size,
-                activation=act,
-                bias=bias
+            VSSBlock(
+                hidden_dim = feature_dim[2],
+                d_state = d_state,
+                drop_path = dropout,
+                bias = bias
             ) for _ in range(n_bottleneck_cab)
         ])
 
         # Decoder - 3 UpBlocks
         self.prompt_level3 = PromptBlock(prompt_dim[2], len_prompt[2], prompt_size[2], feature_dim[2], learnable_prompt)
-        self.dec_level3 = UpBlock(feature_dim[2], feature_dim[1], prompt_dim[2], n_dec_cab[2], kernel_size, bias, act, n_history)
+        self.dec_level3 = UpBlock(feature_dim[2], d_state, prompt_dim[2], n_dec_cab[2], bias, dropout, n_history)
 
         self.prompt_level2 = PromptBlock(prompt_dim[1], len_prompt[1], prompt_size[1], feature_dim[1], learnable_prompt)
-        self.dec_level2 = UpBlock(feature_dim[1], feature_dim[0], prompt_dim[1], n_dec_cab[1], kernel_size, bias, act, n_history)
+        self.dec_level2 = UpBlock(feature_dim[1], d_state, prompt_dim[1], n_dec_cab[1], bias, dropout, n_history)
 
         self.prompt_level1 = PromptBlock(prompt_dim[0], len_prompt[0], prompt_size[0], feature_dim[0], learnable_prompt)
-        self.dec_level1 = UpBlock(feature_dim[0], n_feat0, prompt_dim[0], n_dec_cab[0], kernel_size, bias, act, n_history)
+        self.dec_level1 = UpBlock(feature_dim[0], d_state, prompt_dim[0], n_dec_cab[0], bias, dropout, n_history)
 
         # OutConv
-        self.final_proj = FinalProjection(n_feat0, out_chans)
+        self.final_proj = FinalProjection(n_feat0)
 
-    def forward(self, x, history_feat: Optional[List[torch.Tensor]] = None):
+    def forward(self, x: torch.Tensor, history_feat: Optional[List[torch.Tensor]] = None):
+        """
+        Forward pass of PromptUnet.
+
+        Args:
+            x: (B, C, H, W) tensor after patch embedding via PatchEmbed
+            history_feat: list of 3 tensors or None for temporal context, each of shape [(B, D_i, H_i, W_i)]
+
+        Returns:
+            tuple:
+                - out: (B, C_out, H, W) final projection output from FinalProjection
+                - history_feat: updated list of history features for next cascade
+        """
         if history_feat is None:
             history_feat = [None, None, None]
 
         history_feat3, history_feat2 , history_feat1 = history_feat
         current_feat = []
         
-        # 0. patch embedding
+        # 0. patch embedding: x_in (B, C_in, H, W) -> x_embed (B, n_feat0, H', W')
         x = self.patch_embed(x)
 
         # 1. encoder
+        # enc_level1: x_embed -> x1_down (B, D1, H'/2, W'/2), enc1 skip (B, D0, H', W')
         x, enc1 = self.enc_level1(x)
+        # enc_level2: x1_down -> x2_down (B, D2, H'/4, W'/4), enc2 skip (B, D1, H'/2, W'/2)
         x, enc2 = self.enc_level2(x)
+        # enc_level3: x2_down -> x3_down (B, D3, H'/8, W'/8), enc3 skip (B, D2, H'/4, W'/4)
         x, enc3 = self.enc_level3(x)
 
-        # 2. bottleneck
+        # 2. bottleneck: x3_down -> same shape (B, D2, H'/8, W'/8)
         x = self.bottleneck(x)
 
         # 3. decoder
         current_feat.append(x.clone())
-        dec_prompt3 = self.prompt_level3(x)
-        x = self.dec_level3(x,dec_prompt3,self.skip_attn3(enc3), history_feat3)
+        dec_prompt3 = self.prompt_level3(x)  # (B, prompt_dim[2], H'/8, W'/8)
+        x = self.dec_level3(x, dec_prompt3, self.skip_attn3(enc3), history_feat3)
+        # x out: (B, D2, H'/4, W'/4)
 
         current_feat.append(x.clone())
-        dec_prompt2 = self.prompt_level2(x)
-        x = self.dec_level2(x,dec_prompt2,self.skip_attn2(enc2), history_feat2)
+        dec_prompt2 = self.prompt_level2(x)  # (B, prompt_dim[1], H'/4, W'/4)
+        x = self.dec_level2(x, dec_prompt2, self.skip_attn2(enc2), history_feat2)
+        # x out: (B, D1, H'/2, W'/2)
 
         current_feat.append(x.clone())
-        dec_prompt1 = self.prompt_level1(x)
-        x = self.dec_level1(x,dec_prompt1,self.skip_attn1(enc1), history_feat1)
+        dec_prompt1 = self.prompt_level1(x)  # (B, prompt_dim[0], H'/2, W'/2)
+        x = self.dec_level1(x, dec_prompt1, self.skip_attn1(enc1), history_feat1)
+        # x out: (B, n_feat0, H', W')
 
-        # 4. last conv
+        # 4. final projection
         if self.n_history > 0:
+            # update history_feat shapes accordingly
+            # history_feat[i]: (B, D_i * n_history, H_i, W_i)
             for i, history_feat_i in enumerate(history_feat):
-                if history_feat_i is None: # for the first cascade, repeat the current feature
-                    history_feat[i] = torch.cat([torch.tile(current_feat[i],(1,self.n_history,1,1))], dim=1)
-                else: # for the rest cascades: pop the oldest feature and append the current feature
-                    history_feat[i] = torch.cat([current_feat[i], history_feat[i][:,:-self.feature_dim[2-i]]], dim=1)
-        return self.final_proj(x), history_feat
+                if history_feat_i is None:
+                    history_feat[i] = torch.tile(current_feat[i], (1, self.n_history, 1, 1))
+                else:
+                    dim = self.feature_dim[2-i]
+                    history_feat[i] = torch.cat([current_feat[i], history_feat_i[:, :-dim]], dim=1)
+
+        out = self.final_proj(x)
+
+        return out, history_feat
 
 
 class NormPromptUnet(nn.Module):
@@ -134,7 +156,6 @@ class NormPromptUnet(nn.Module):
         n_dec_cab: List[int],
         n_skip_cab: List[int],
         n_bottleneck_cab: int,
-        no_use_ca: bool = False,
         learnable_prompt=False,
         adaptive_input=False,
         n_buffer=0,
@@ -155,7 +176,6 @@ class NormPromptUnet(nn.Module):
                                n_dec_cab=n_dec_cab,
                                n_skip_cab=n_skip_cab,
                                n_bottleneck_cab=n_bottleneck_cab,
-                               no_use_ca=no_use_ca,
                                learnable_prompt = learnable_prompt,
                                adaptive_input=adaptive_input,
                                n_buffer = n_buffer,
@@ -206,29 +226,46 @@ class NormPromptUnet(nn.Module):
     def forward(self, x: torch.Tensor,
                 history_feat: Optional[Tuple[torch.Tensor, torch.Tensor, torch.Tensor]] = None,
                 buffer: torch.Tensor = None):
-        if not x.shape[-1] == 2:
+        """
+        Forward pass of NormPromptUnet.
+
+        Args:
+            x: (B, C_coils, H, W, 2) complex k-space input
+            history_feat: tuple of history features or None
+            buffer: (B, n_buffer*C, H_small, W_small) adaptive buffer
+
+        Returns:
+            tuple:
+                - x_out: (B, C_coils, H, W, 2) complex output
+                - latent: (B, C_coils, H_small, W_small) optional latent feature
+                - history_feat: updated history features
+        """
+        # Check complex last dim
+        if x.shape[-1] != 2:
             raise ValueError("Last dimension must be 2 for complex.")
         cc = x.shape[1]
+        # concatenate buffer if provided
         if buffer is not None:
             x = torch.cat([x, buffer], dim=1)
 
-        # get shapes for unet and normalize
+        # flatten complex to channel dim: (B, 2*C, H, W)
         x = self.complex_to_chan_dim(x)
+        # normalize, pad, unet, unpad, unnorm back
         x, mean, std = self.norm(x)
         x, pad_sizes = self.pad(x)
-
         x, history_feat = self.unet(x, history_feat)
-
-        # get shapes back and unnormalize
         x = self.unpad(x, *pad_sizes)
         x = self.unnorm(x, mean, std)
         x = self.chan_complex_to_last_dim(x)
 
+        # split latent and output
         if buffer is not None:
-            x, _, latent, _ = torch.split(x, [cc, cc, cc, x.shape[1] - 3*cc], dim=1)
+            x_out, _, latent, _ = torch.split(x, [cc, cc, cc, x.shape[1] - 3*cc], dim=1)
         else:
+            x_out = x
             latent = None
-        return x, latent, history_feat
+        return x_out, latent, history_feat
+
 
 
 class PromptMRBlock(nn.Module):
@@ -247,14 +284,33 @@ class PromptMRBlock(nn.Module):
         mask: torch.Tensor,
         sens_maps: torch.Tensor,
         history_feat: Optional[Tuple[torch.Tensor, ...]] = None,
-        buffer: Optional[Tuple[torch.Tensor, ...]] = None,
+        buffer: Optional[torch.Tensor] = None,
     ):
-        zero = torch.zeros(1, 1, 1, 1, 1).to(current_kspace)
+        """
+        Forward pass of one PromptMRBlock cascade.
 
-        soft_dc = torch.where(mask, current_kspace - ref_kspace, zero) * self.dc_weight # torch.Size([1, 1, 218, 170, 1])
-        pred, latent, history_feat = self.model(sens_reduce(current_kspace, sens_maps, self.num_adj_slices),history_feat,buffer)
-        model_term = sens_expand(pred , sens_maps, self.num_adj_slices)
-        return current_kspace - soft_dc - model_term, latent, history_feat
+        Args:
+            current_kspace: (B, Nc, H, W, 2) current k-space estimate
+            ref_kspace: (B, Nc, H, W, 2) reference k-space (masked input)
+            mask: (B, 1, H, W) sampling mask
+            sens_maps: (B, Nc, H, W, 2) sensitivity maps
+            history_feat: optional history features from previous cascades
+            buffer: optional buffer image features
+
+        Returns:
+            tuple:
+                - updated_kspace: (B, Nc, H, W, 2)
+                - latent: latent feature or None
+                - history_feat: updated history features
+        """
+        zero = torch.zeros(1,1,1,1,1).to(current_kspace)
+        soft_dc = torch.where(mask, current_kspace - ref_kspace, zero) * self.dc_weight
+        pred, latent, history_feat = self.model(
+            sens_reduce(current_kspace, sens_maps, self.num_adj_slices),
+            history_feat, buffer)
+        model_term = sens_expand(pred, sens_maps, self.num_adj_slices)
+        updated = current_kspace - soft_dc - model_term
+        return updated, latent, history_feat
 
 class PromptMR(nn.Module):
 
@@ -274,14 +330,12 @@ class PromptMR(nn.Module):
         n_dec_cab: List[int],
         n_skip_cab: List[int],
         n_bottleneck_cab: int,
-        no_use_ca: bool = False,
         sens_len_prompt: Optional[List[int]] = None,
         sens_prompt_size: Optional[List[int]] = None,
         sens_n_enc_cab: Optional[List[int]] = None,
         sens_n_dec_cab: Optional[List[int]] = None,
         sens_n_skip_cab: Optional[List[int]] = None,
         sens_n_bottleneck_cab: Optional[List[int]] = None,
-        sens_no_use_ca: Optional[bool] = None,
         mask_center: bool = True,
         learnable_prompt: bool = False,
         adaptive_input: bool = False,
@@ -307,7 +361,6 @@ class PromptMR(nn.Module):
             n_dec_cab=sens_n_dec_cab if sens_n_dec_cab is not None else n_dec_cab,
             n_skip_cab=sens_n_skip_cab if sens_n_skip_cab is not None else n_skip_cab,
             n_bottleneck_cab=sens_n_bottleneck_cab if sens_n_bottleneck_cab is not None else n_bottleneck_cab,
-            no_use_ca=sens_no_use_ca if sens_no_use_ca is not None else no_use_ca,
             mask_center=mask_center,
             learnable_prompt = learnable_prompt,
             use_sens_adj = use_sens_adj
@@ -327,7 +380,6 @@ class PromptMR(nn.Module):
                     n_dec_cab=n_dec_cab,
                     n_skip_cab=n_skip_cab,
                     n_bottleneck_cab=n_bottleneck_cab,
-                    no_use_ca=no_use_ca,
                     learnable_prompt=learnable_prompt,
                     adaptive_input=adaptive_input,
                     n_buffer = n_buffer,
@@ -344,17 +396,25 @@ class PromptMR(nn.Module):
         num_low_frequencies: torch.Tensor,
         mask_type: Tuple[str] = ("cartesian",),
         use_checkpoint: bool = False,
-        compute_sens_per_coil: bool = False, # can further reduce the memory usage
-    ) -> torch.Tensor:
-        '''
+        compute_sens_per_coil: bool = False,
+    ) -> dict:
+        """
+        Full PromptMR forward: cascaded DC + U-Net reconstruction.
+
         Args:
-            masked_kspace: (bs, nc, h, w, 2) input k-space data
-            mask: (bs, 1, h, w) or (bs, nc, h, w) mask
-            num_low_frequencies: (bs) number of low frequencies
-            mask_type: (str) mask type
-            use_checkpoint: (bool) whether to use checkpoint for memory saving
-            compute_sens_per_coil: (bool) whether to compute sensitivity maps per coil for memory saving
-        '''
+            masked_kspace: (B, Nc, H, W, 2) input under-sampled k-space
+            mask: (B, 1, H, W) sampling mask
+            num_low_frequencies: (B,) number of ACS lines
+            mask_type: tuple of mask type strings
+            use_checkpoint: bool flag for gradient checkpointing
+            compute_sens_per_coil: bool flag to compute sens maps per coil
+
+        Returns:
+            dict with:
+             - 'img_pred': (B, 1, H, W) reconstructed image
+             - 'img_zf': (B, 1, H, W) zero-filled image
+             - 'sens_maps': (B, H, W) complex sensitivity map
+        """
         if use_checkpoint:  # and self.training:
             sens_maps = torch.utils.checkpoint.checkpoint(
                  self.sens_net, masked_kspace, mask, num_low_frequencies, mask_type, compute_sens_per_coil,
@@ -372,7 +432,7 @@ class PromptMR(nn.Module):
             is_last = ith == self.num_cascades - 1
             if use_checkpoint and self.training:
                 kspace_pred, latent, history_feat  = torch.utils.checkpoint.checkpoint(
-                    cascade,kspace_pred, masked_kspace, mask, sens_maps, history_feat,buffer, use_reentrant=False)
+                    cascade, kspace_pred, masked_kspace, mask, sens_maps, history_feat, buffer, use_reentrant=False)
             else:
                 kspace_pred, latent, history_feat = cascade(kspace_pred, masked_kspace, mask, sens_maps, history_feat,buffer)
 
@@ -412,7 +472,6 @@ class SensitivityModel(nn.Module):
         n_dec_cab: List[int] = [2, 2, 3],
         n_skip_cab: List[int] = [1, 1, 1],
         n_bottleneck_cab: int = 3,
-        no_use_ca: bool = False,
         mask_center: bool = True,
         learnable_prompt = False,
         use_sens_adj: bool = True,
@@ -433,7 +492,6 @@ class SensitivityModel(nn.Module):
                                         n_dec_cab=n_dec_cab,
                                         n_skip_cab=n_skip_cab,
                                         n_bottleneck_cab=n_bottleneck_cab,
-                                        no_use_ca=no_use_ca,
                                         learnable_prompt = learnable_prompt,
                                         )
         self.kspace_acs_extractor = KspaceACSExtractor(mask_center)
@@ -487,6 +545,19 @@ class SensitivityModel(nn.Module):
         mask_type: Tuple[str] = ("cartesian",),
         compute_per_coil: bool = False,
     ) -> torch.Tensor:
+        """
+        Estimate coil sensitivity maps from k-space.
+
+        Args:
+            masked_kspace: (B, Nc, H, W, 2) under-sampled k-space
+            mask: (B, 1, H, W) sampling mask
+            num_low_frequencies: number of ACS lines or tensor
+            mask_type: tuple of mask types
+            compute_per_coil: bool to compute per-coil adaptively
+
+        Returns:
+            sens_maps: (B, Nc, H, W, 2) complex sensitivity maps
+        """
 
         masked_kspace_acs = self.kspace_acs_extractor(masked_kspace, mask, num_low_frequencies, mask_type)
         # convert to image space
@@ -495,3 +566,97 @@ class SensitivityModel(nn.Module):
         return self.divide_root_sum_of_squares(
             self.batch_chans_to_chan_dim(self.compute_sens(self.norm_unet, images, compute_per_coil), batches)
         )
+
+
+
+def count_parameters(model: torch.nn.Module) -> int:
+    return sum(p.numel() for p in model.parameters() if p.requires_grad)
+
+
+def main():
+    import time
+    import torch
+
+    # --- config (match your YAML defaults) ---
+    batch_size       = 1
+    num_cascades     = 12
+    num_adj_slices   = 5
+    n_feat0          = 96
+    feature_dim      = [192, 384, 768]
+    prompt_dim       = [96, 192, 384]
+    sens_n_feat0     = 48
+    sens_feature_dim = [96, 192, 384]
+    sens_prompt_dim  = [48, 96, 192]
+    len_prompt       = [5, 5, 5]
+    prompt_size      = [64, 32, 16]
+    n_enc_cab        = [2, 2, 2]
+    n_dec_cab        = [2, 2, 2]
+    n_skip_cab       = [1, 1, 1]
+    n_bottleneck_cab = 3
+    learnable_prompt = False
+    adaptive_input   = False
+    n_buffer         = 0
+    n_history        = 0
+    use_sens_adj     = False
+    height, width    = 512, 256
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"Using device: {device}")
+
+    # instantiate
+    model = PromptMR(
+        num_cascades=num_cascades,
+        num_adj_slices=num_adj_slices,
+        n_feat0=n_feat0,
+        feature_dim=feature_dim,
+        prompt_dim=prompt_dim,
+        sens_n_feat0=sens_n_feat0,
+        sens_feature_dim=sens_feature_dim,
+        sens_prompt_dim=sens_prompt_dim,
+        len_prompt=len_prompt,
+        prompt_size=prompt_size,
+        n_enc_cab=n_enc_cab,
+        n_dec_cab=n_dec_cab,
+        n_skip_cab=n_skip_cab,
+        n_bottleneck_cab=n_bottleneck_cab,
+        learnable_prompt=learnable_prompt,
+        adaptive_input=adaptive_input,
+        n_buffer=n_buffer,
+        n_history=n_history,
+        use_sens_adj=use_sens_adj
+    ).to(device)
+
+    # count params
+    total_params = count_parameters(model)
+    print(f"Total parameters: {total_params:,} (~{total_params*4/1024**2:.2f} MB)")
+
+    # dummy inputs
+    nc = num_adj_slices * 10  # coil images
+    dummy_kspace = torch.randn(batch_size, nc, height, width, 2, device=device)
+    dummy_mask   = torch.ones(batch_size, 1, height, width, dtype=torch.bool, device=device)
+    dummy_nlf    = torch.tensor([height // 4] * batch_size, device=device)
+
+    # warm-up
+    print("Warming up…")
+    for _ in range(5):
+        _ = model(dummy_kspace, dummy_mask, dummy_nlf)
+
+    # reset & measure
+    if device.type == "cuda":
+        torch.cuda.reset_peak_memory_stats(device)
+    iters = 20
+    torch.cuda.synchronize(device) if device.type=="cuda" else None
+    t0 = time.time()
+    for _ in range(iters):
+        _ = model(dummy_kspace, dummy_mask, dummy_nlf)
+    torch.cuda.synchronize(device) if device.type=="cuda" else None
+    t1 = time.time()
+
+    print(f"Ran {iters} iters in {t1-t0:.2f}s → {iters/(t1-t0):.1f} it/s")
+    if device.type == "cuda":
+        peak = torch.cuda.max_memory_allocated(device)/1024**2
+        print(f"Peak GPU memory: {peak:.1f} MB")
+
+
+if __name__ == "__main__":
+    main()
