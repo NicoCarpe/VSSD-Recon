@@ -75,7 +75,7 @@ class PromptUnet(nn.Module):
         self.dec_level1 = UpBlock(feature_dim[0], d_state, prompt_dim[0], n_dec_cab[0], bias, dropout, n_history)
 
         # OutConv
-        self.final_proj = FinalProjection(n_feat0)
+        self.final_proj = FinalProjection(n_feat0, out_chans)
 
     def forward(self, x: torch.Tensor, history_feat: Optional[List[torch.Tensor]] = None):
         """
@@ -292,7 +292,7 @@ class PromptMRBlock(nn.Module):
         Args:
             current_kspace: (B, Nc, H, W, 2) current k-space estimate
             ref_kspace: (B, Nc, H, W, 2) reference k-space (masked input)
-            mask: (B, 1, H, W) sampling mask
+            mask: (B, 1, H, W, 1) sampling mask
             sens_maps: (B, Nc, H, W, 2) sensitivity maps
             history_feat: optional history features from previous cascades
             buffer: optional buffer image features
@@ -395,7 +395,7 @@ class PromptMR(nn.Module):
         mask: torch.Tensor,
         num_low_frequencies: torch.Tensor,
         mask_type: Tuple[str] = ("cartesian",),
-        use_checkpoint: bool = False,
+        use_checkpoint: bool = True,
         compute_sens_per_coil: bool = False,
     ) -> dict:
         """
@@ -403,7 +403,7 @@ class PromptMR(nn.Module):
 
         Args:
             masked_kspace: (B, Nc, H, W, 2) input under-sampled k-space
-            mask: (B, 1, H, W) sampling mask
+            mask: (B, 1, H, W, 1) sampling mask
             num_low_frequencies: (B,) number of ACS lines
             mask_type: tuple of mask type strings
             use_checkpoint: bool flag for gradient checkpointing
@@ -421,7 +421,7 @@ class PromptMR(nn.Module):
                 use_reentrant=False)
         else:
             sens_maps = self.sens_net(masked_kspace, mask, num_low_frequencies, mask_type, compute_sens_per_coil)
-            
+
         kspace_pred = masked_kspace.clone() # torch.Size([1, 60, 218, 170, 2])
         zero = torch.zeros(1, 1, 1, 1, 1).to(kspace_pred)
         img_zf = sens_reduce(kspace_pred, sens_maps, self.num_adj_slices)
@@ -597,7 +597,7 @@ def main():
     adaptive_input   = False
     n_buffer         = 0
     n_history        = 0
-    use_sens_adj     = False
+    use_sens_adj     = True
     height, width    = 512, 256
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -633,7 +633,7 @@ def main():
     # dummy inputs
     nc = num_adj_slices * 10  # coil images
     dummy_kspace = torch.randn(batch_size, nc, height, width, 2, device=device)
-    dummy_mask   = torch.ones(batch_size, 1, height, width, dtype=torch.bool, device=device)
+    dummy_mask   = torch.ones(batch_size, 1, height, width, 1, dtype=torch.bool, device=device)
     dummy_nlf    = torch.tensor([height // 4] * batch_size, device=device)
 
     # warm-up

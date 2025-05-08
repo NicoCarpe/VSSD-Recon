@@ -7,7 +7,7 @@
 #SBATCH --cpus-per-task=4          
 #SBATCH --mem=32GB                 
 #SBATCH --account=def-punithak
-#SBATCH --mail-type=END,FAIL
+#SBATCH --mail-type=BEGIN,END,FAIL
 #SBATCH --mail-user=ngcarpen@ualberta.ca
 #SBATCH --output=slurm_logs/out/%x_%j.out
 #SBATCH --error=slurm_logs/err/%x_%j.err
@@ -36,7 +36,7 @@ source $SLURM_TMPDIR/env/bin/activate
 
 python -m pip install --upgrade pip
 python -m pip install --no-index -r $PROJECT_ROOT/configs/env_local.txt
-python -m pip install    -r $PROJECT_ROOT/configs/env_pypi.txt
+python -m pip install -r $PROJECT_ROOT/configs/env_pypi.txt
 
 python - <<'EOF'
 import torch

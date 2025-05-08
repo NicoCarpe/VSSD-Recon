@@ -96,7 +96,7 @@ class UpBlock(nn.Module):
 
         # why this one
         self.ca = VSSBlock(
-                hidden_dim=in_dim,
+                hidden_dim=in_dim//2,   # this operation happens after patch expand
                 d_state = d_state,
                 drop_path = dropout,
                 bias = bias
@@ -114,7 +114,7 @@ class UpBlock(nn.Module):
 
         x = torch.cat([x, prompt_dec], dim=1)
         x = self.fuse(x)
-        x = self.reduce(x)
+        x = self.reduce(x)  # reduce channel count (linear projection / 1x1 conv)
 
         x_up = self.up(x) 
         
@@ -338,6 +338,7 @@ class PatchExpand(nn.Module):
     def forward(self, x):
         # x: [B, C, H, W]
         B, C, H, W = x.shape
+        assert C == self.dim, f"Expected {self.dim} channels, got {C}"
 
         # → [B, H, W, C]
         x = x.permute(0, 2, 3, 1).contiguous()
@@ -352,7 +353,7 @@ class PatchExpand(nn.Module):
             'b h w (p1 p2 c) -> b (h p1) (w p2) c',
             p1=self.dim_scale,
             p2=self.dim_scale,
-            c=C // self.dim_scale
+            c=self.dim // self.dim_scale
         )  # → [B, H*dim_scale, W*dim_scale, C/ dim_scale]
 
         x = self.norm(x)  # normalize C/dim_scale channels
@@ -365,40 +366,45 @@ class PatchExpand(nn.Module):
 # -------- Final Projection -----------------------
 
 class FinalProjection(nn.Module):
-    r"""
-    Inverse of PatchEmbed: upsamples spatial dims by dim_scale and reduces channels by dim_scale.
-    Args:
-        dim (int): number of input channels
-        dim_scale (int): upsampling and channel reduction factor
-        norm_layer (nn.Module, optional): normalization layer applied after rearrange
     """
-    def __init__(self, dim, dim_scale=4, norm_layer=nn.LayerNorm):
+    Inverse of PatchEmbed: upsamples spatial dims by dim_scale and
+    projects to exactly out_chans real channels.
+    Args:
+        in_dim (int): number of input feature channels
+        out_chans (int): desired number of output (real) channels
+        dim_scale (int): upsampling factor per spatial dimension
+        norm_layer (nn.Module): normalization over the last channel axis
+    """
+    def __init__(self, in_dim: int, out_chans: int, dim_scale: int = 4, norm_layer=nn.LayerNorm):
         super().__init__()
         self.dim_scale = dim_scale
-        self.dim = dim
-        # project C → (dim_scale^2 * C)
-        self.expand = nn.Linear(dim, dim_scale * dim, bias=False)
-        # normalize over output channels after reduction
-        self.norm = norm_layer(dim // dim_scale)
+        self.out_chans = out_chans
+        # project from in_dim → (dim_scale^2 * out_chans)
+        self.expand = nn.Linear(in_dim, (dim_scale ** 2) * out_chans, bias=False)
+        # normalize over the final out_chans axis
+        self.norm = norm_layer(out_chans)
 
     def forward(self, x):
-        # x: [B, C, H, W]
-        x = x.permute(0, 2, 3, 1).contiguous()  # → [B, H, W, C]
-        B, H, W, C = x.shape
+        # x: [B, in_dim, H, W]
+        # → [B, H, W, in_dim] so we can do a point-wise linear
+        x = x.permute(0, 2, 3, 1).contiguous()  
 
-        # → [B, H, W, C * dim_scale]
+        # → [B, H, W, dim_scale^2 * out_chans]
         x = self.expand(x)
 
-        # rearrange: split last axis into (dim_scale, dim_scale, C/dim_scale)
+        # split that last axis into (p1, p2, out_chans)
+        # which upsamples H,W by p1,p2 and leaves out_chans channels
         x = rearrange(
             x,
             'b h w (p1 p2 c) -> b (h p1) (w p2) c',
             p1=self.dim_scale,
             p2=self.dim_scale,
-            c=C // self.dim_scale
-        )  # → [B, H*dim_scale, W*dim_scale, C/dim_scale]
+            c=self.out_chans
+        )  # → [B, H*dim_scale, W*dim_scale, out_chans]
 
-        x = self.norm(x)  # normalize C/dim_scale channels
+        # normalize over the channel axis
+        x = self.norm(x)
 
-        # → [B, C/dim_scale, H*dim_scale, W*dim_scale]
+        # → [B, out_chans, H*dim_scale, W*dim_scale]
         return x.permute(0, 3, 1, 2).contiguous()
+
