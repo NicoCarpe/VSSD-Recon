@@ -9,7 +9,7 @@ import torch.nn.functional as F
 from einops import rearrange
 
 from data import transforms
-from VSSBlock import VSSBlock
+from .VSSBlock import VSSBlock
 
 
 ##########################################################################

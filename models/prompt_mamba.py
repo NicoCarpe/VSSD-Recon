@@ -8,8 +8,8 @@ from torch import nn
 import torch.nn.functional as F
 from einops import rearrange
 from mri_utils import ifft2c, rss, complex_abs, rss_complex, sens_expand, sens_reduce
-from utils_mamba import KspaceACSExtractor, DownBlock, UpBlock, SkipBlock, PromptBlock, PatchEmbed, FinalProjection
-from VSSBlock import VSSBlock
+from .utils_mamba import KspaceACSExtractor, DownBlock, UpBlock, SkipBlock, PromptBlock, PatchEmbed, FinalProjection
+from .VSSBlock import VSSBlock
 
 
 class PromptUnet(nn.Module): 
@@ -207,8 +207,11 @@ class NormPromptUnet(nn.Module):
 
     def pad(self, x: torch.Tensor) -> Tuple[torch.Tensor, Tuple[List[int], List[int], int, int]]:
         _, _, h, w = x.shape
-        w_mult = ((w - 1) | 7) + 1
-        h_mult = ((h - 1) | 7) + 1
+        
+        # pad to multiple of patch_size * 2**n_downblocks = 4 * 2**3 = 32
+        pad_to = 32
+        w_mult = ((w - 1) | (pad_to - 1)) + 1
+        h_mult = ((h - 1) | (pad_to - 1)) + 1
         w_pad = [math.floor((w_mult - w) / 2), math.ceil((w_mult - w) / 2)]
         h_pad = [math.floor((h_mult - h) / 2), math.ceil((h_mult - h) / 2)]
         # TODO: fix this type when PyTorch fixes theirs
@@ -330,12 +333,14 @@ class PromptMR(nn.Module):
         n_dec_cab: List[int],
         n_skip_cab: List[int],
         n_bottleneck_cab: int,
+        no_use_ca: bool = False,    # left in for compatibility with promptmr pl-module logic
         sens_len_prompt: Optional[List[int]] = None,
         sens_prompt_size: Optional[List[int]] = None,
         sens_n_enc_cab: Optional[List[int]] = None,
         sens_n_dec_cab: Optional[List[int]] = None,
         sens_n_skip_cab: Optional[List[int]] = None,
         sens_n_bottleneck_cab: Optional[List[int]] = None,
+        sens_no_use_ca: Optional[bool] = None,  # left in for compatibility with promptmr pl-module logic
         mask_center: bool = True,
         learnable_prompt: bool = False,
         adaptive_input: bool = False,
@@ -594,9 +599,9 @@ def main():
     n_skip_cab       = [1, 1, 1]
     n_bottleneck_cab = 3
     learnable_prompt = False
-    adaptive_input   = False
-    n_buffer         = 0
-    n_history        = 0
+    adaptive_input   = True
+    n_buffer         = 4
+    n_history        = 11
     use_sens_adj     = True
     height, width    = 512, 256
 

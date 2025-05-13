@@ -5,4 +5,8 @@
 /raw_datasets
 /outputs/
 /scripts/slurm_logs/
+/scripts/exp/
 /pretrained_models/
+
+
+.env

@@ -37,7 +37,7 @@ Pillow_SIMD==9.5.0.post2+computecanada
 protobuf==5.29.3+computecanada
 pyparsing==3.2.1+computecanada
 python_dateutil==2.9.0.post0+computecanada
-pytorch-lightning==2.4.0+computecanada
+lightning==2.4.0+computecanada
 pytz==2025.2+computecanada
 requests==2.32.3+computecanada
 safetensors==0.4.5+computecanada

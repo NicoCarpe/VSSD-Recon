@@ -46,7 +46,7 @@ class PromptMrModule(MriModule):
         n_buffer: int = 4,
         n_history: int = 0,
         use_sens_adj: bool = True,
-        model_version: str = "promptmr_v2",
+        model_version: str = "prompt_mamba",
         lr: float = 0.0002,
         lr_step_size: int = 11,
         lr_gamma: float = 0.1,

@@ -1,5 +1,5 @@
-from .promptmr_v2 import PromptMR
-
+# from .promptmr_v2 import PromptMR
+from .prompt_mamba import PromptMR
 
 def count_parameters(model):
     return sum(p.numel() for p in model.parameters()) if model is not None else 0

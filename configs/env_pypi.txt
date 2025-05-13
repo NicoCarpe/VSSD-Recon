@@ -1,3 +1,4 @@
 lightning-utilities==0.11.6
 runstats==2.0.0
 torchmetrics==1.4.1
+jsonargparse[all]==4.39.0

@@ -1,10 +1,10 @@
 #!/bin/bash -l
 #SBATCH -J promptumamba_preproc
-#SBATCH --time=0-03:00:00
+#SBATCH --time=0-00:30:00
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1            
 #SBATCH --gpus-per-node=v100l:1             
-#SBATCH --cpus-per-task=6                  
+#SBATCH --cpus-per-task=4                  
 #SBATCH --mem=64GB                                                 
 #SBATCH --account=def-punithak
 #SBATCH --mail-type=BEGIN,END,FAIL
@@ -22,7 +22,6 @@ export PYTHONPATH=$PROJECT_ROOT:$PYTHONPATH
 
 module purge
 
-# Load necessary modules
 module load StdEnv/2023
 module load gcc/12.3
 module load hdf5/1.14.2
@@ -31,18 +30,19 @@ module load cudnn/8.9.5.29
 module load nccl/2.18.3
 module load python/3.10
 
-# Create and activate a virtual environment
-virtualenv --no-download $SLURM_TMPDIR/env
+# create a clean venv
+python -m venv $SLURM_TMPDIR/env
 source $SLURM_TMPDIR/env/bin/activate
 
-# Upgrade pip
-pip install --no-index --upgrade pip
+python -m pip install --upgrade pip
+python -m pip install --no-index -r $PROJECT_ROOT/configs/env_local.txt
+python -m pip install -r $PROJECT_ROOT/configs/env_pypi.txt
 
-# Install packages from Compute Canada wheels
-pip install --no-index -r $PROJECT_ROOT/configs/env_local.txt
-
-# Install packages from PyPI or other sources
-pip install -r $PROJECT_ROOT/configs/env_pypi.txt
+python - <<'EOF'
+import torch
+print("Torch version:", torch.__version__)
+print("CUDA available:", torch.cuda.is_available())
+EOF
 
 srun python prepare_h5_dataset_cmrxrecon.py \
     --input_matlab_folder $PROJECT_ROOT/raw_datasets/MICCAIChallenge2024/ChallengeData/MultiCoil \

@@ -13,22 +13,23 @@ model:
     sens_prompt_dim: [48,96,192]
     len_prompt: [5,5,5]
     prompt_size: [64,32,16]
-    n_enc_cab: [2,2,3]
-    n_dec_cab: [2,2,3]
+    n_enc_cab: [2,2,2]
+    n_dec_cab: [2,2,2]
     n_skip_cab: [1,1,1]
-    n_bottleneck_cab: 4
+    n_bottleneck_cab: 4    
+    no_use_ca: false
     learnable_prompt: false
     adaptive_input: false
     n_buffer: 0
     n_history: 0
-    use_sens_adj: false
+    use_sens_adj: True
     lr_gamma: 0.1
     weight_decay: 1e-2
-    use_checkpoint: false
+    use_checkpoint: true
 
 # add model tags to wandb
 trainer:
   logger:
     class_path: lightning.pytorch.loggers.WandbLogger
     init_args:
-      tags: [promptmr]
+      tags: [promptmamba]
