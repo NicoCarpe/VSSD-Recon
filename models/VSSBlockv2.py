@@ -30,7 +30,7 @@ class SS2D(nn.Module):
         d_conv=3,
         conv_init=None,
         expand=2,
-        headdim=64,     # NOTE: might be mismatched with the model dimension
+        headdim=96,     # NOTE: might be mismatched with the model dimension
         ngroups=1,
         A_init_range=(1, 16),
         D_has_hdim=False,
@@ -267,7 +267,7 @@ class SS2D(nn.Module):
                 initial_states=initial_states,
                 **dt_limit_kwargs,
             )
-            ys = rearrange(y, "b l (k h) p -> b l k (h p)")
+            ys = rearrange(ys, "b l (k h) p -> b l k (h p)")
             y: torch.Tensor = cross_merge_fn(ys.view(B, H, W, self.k_groups, self.d_inner), in_channel_first=False, out_channel_first=False, scans=_scan_mode, force_torch=scan_force_torch)
 
             # NOTE: again we are not using the rmsnorm as it is implemented only for 1D
@@ -288,8 +288,9 @@ class SS2D(nn.Module):
 class VSSBlock(nn.Module):
     def __init__(
         self,
-        hidden_dim: int = 0,
+        hidden_dim: int = 96,
         d_state: int = 64,
+        headdim: int = 96,
         drop_path: float = 0,
         norm_layer: Callable[..., torch.nn.Module] = partial(nn.LayerNorm, eps=1e-6),
         attn_drop_rate: float = 0,
@@ -298,7 +299,7 @@ class VSSBlock(nn.Module):
     ):
         super().__init__()
         self.ln_1 = norm_layer(hidden_dim)
-        self.ssm = SS2D(d_model=hidden_dim, d_state=d_state, dropout=attn_drop_rate, bias=bias, **kwargs)
+        self.ssm = SS2D(d_model=hidden_dim, d_state=d_state, headdim=headdim, dropout=attn_drop_rate, bias=bias, **kwargs)
         self.drop_path = DropPath(drop_path)
 
     def forward(self, x: torch.Tensor):

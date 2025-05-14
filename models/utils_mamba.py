@@ -9,7 +9,8 @@ import torch.nn.functional as F
 from einops import rearrange
 
 from data import transforms
-from .VSSBlock import VSSBlock
+# from .VSSBlock import VSSBlock
+from .VSSBlockv2 import VSSBlock
 
 
 ##########################################################################
@@ -42,13 +43,14 @@ class PromptBlock(nn.Module):
 # ---------- Down Block -----------------------
 
 class DownBlock(nn.Module):
-    def __init__(self, in_dim, d_state, n_block, bias, dropout):
+    def __init__(self, in_dim, d_state, n_block, headdim, bias, dropout):
         super().__init__()
 
         self.encoder = nn.Sequential(*[
             VSSBlock(
                 hidden_dim=in_dim,
                 d_state = d_state,
+                headdim = headdim,                
                 drop_path = dropout,
                 bias = bias
             ) for _ in range(n_block)
@@ -67,7 +69,7 @@ class DownBlock(nn.Module):
 # ---------- Up Block -----------------------
 
 class UpBlock(nn.Module):
-    def __init__(self, in_dim, d_state, prompt_dim, n_block, bias, dropout, n_history=0):
+    def __init__(self, in_dim, d_state, prompt_dim, n_block, headdim, bias, dropout, n_history=0):
         super().__init__()
         # momentum layer
         self.n_history = n_history
@@ -77,6 +79,7 @@ class UpBlock(nn.Module):
                 VSSBlock(
                     hidden_dim=in_dim,
                     d_state = d_state,
+                    headdim = headdim,
                     drop_path = dropout,
                     bias = bias
                 )
@@ -86,6 +89,7 @@ class UpBlock(nn.Module):
             VSSBlock(
                 hidden_dim=in_dim+prompt_dim,
                 d_state = d_state,
+                headdim = headdim,
                 drop_path = dropout,
                 bias = bias
             ) for _ in range(n_block)
@@ -98,6 +102,7 @@ class UpBlock(nn.Module):
         self.ca = VSSBlock(
                 hidden_dim=in_dim//2,   # this operation happens after patch expand
                 d_state = d_state,
+                headdim = headdim,
                 drop_path = dropout,
                 bias = bias
             )
@@ -128,7 +133,7 @@ class UpBlock(nn.Module):
 # ---------- Skip Block -----------------------
 
 class SkipBlock(nn.Module):
-    def __init__(self, enc_dim, d_state, n_cab, bias, dropout):
+    def __init__(self, enc_dim, d_state, n_cab, headdim, bias, dropout):
         super().__init__()
         if n_cab == 0:
             self.skip_attn = nn.Identity()
@@ -137,6 +142,7 @@ class SkipBlock(nn.Module):
                 VSSBlock(
                     hidden_dim=enc_dim,
                     d_state = d_state,
+                    headdim = headdim,
                     drop_path = dropout,
                     bias = bias
                 ) for _ in range(n_cab)

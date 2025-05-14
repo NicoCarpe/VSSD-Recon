@@ -9,7 +9,8 @@ import torch.nn.functional as F
 from einops import rearrange
 from mri_utils import ifft2c, rss, complex_abs, rss_complex, sens_expand, sens_reduce
 from .utils_mamba import KspaceACSExtractor, DownBlock, UpBlock, SkipBlock, PromptBlock, PatchEmbed, FinalProjection
-from .VSSBlock import VSSBlock
+# from .VSSBlock import VSSBlock
+from .VSSBlockv2 import VSSBlock
 
 
 class PromptUnet(nn.Module): 
@@ -29,6 +30,7 @@ class PromptUnet(nn.Module):
                  learnable_prompt=False,
                  adaptive_input=False,
                  d_state=16,
+                 headdim: int,
                  dropout=0,
                  n_buffer=0,
                  n_history=0,
@@ -39,26 +41,27 @@ class PromptUnet(nn.Module):
         self.n_buffer = n_buffer if adaptive_input else 0
         
         in_chans = in_chans * (1+self.n_buffer) if adaptive_input else in_chans 
-        out_chans = out_chans * (1+self.n_buffer) if adaptive_input else in_chans 
+        out_chans = out_chans * (1+self.n_buffer) if adaptive_input else out_chans 
         
         # Patch Embedding
         self.patch_embed = PatchEmbed(patch_size=4, in_chans=in_chans, embed_dim=n_feat0)
         
         # Encoder - 3 DownBlocks
-        self.enc_level1 = DownBlock(n_feat0, d_state, n_enc_cab[0], bias, dropout)
-        self.enc_level2 = DownBlock(feature_dim[0], d_state, n_enc_cab[1], bias, dropout)
-        self.enc_level3 = DownBlock(feature_dim[1], d_state, n_enc_cab[2],  bias, dropout)
+        self.enc_level1 = DownBlock(n_feat0, d_state, n_enc_cab[0], headdim, bias, dropout)
+        self.enc_level2 = DownBlock(feature_dim[0], d_state, n_enc_cab[1], headdim, bias, dropout)
+        self.enc_level3 = DownBlock(feature_dim[1], d_state, n_enc_cab[2], headdim,  bias, dropout)
 
         # Skip Connections - 3 SkipBlocks
-        self.skip_attn1 = SkipBlock(n_feat0, d_state, n_skip_cab[0], bias, dropout)
-        self.skip_attn2 = SkipBlock(feature_dim[0], d_state, n_skip_cab[1], bias, dropout)
-        self.skip_attn3 = SkipBlock(feature_dim[1], d_state, n_skip_cab[2], bias, dropout)
+        self.skip_attn1 = SkipBlock(n_feat0, d_state, n_skip_cab[0], headdim, bias, dropout)
+        self.skip_attn2 = SkipBlock(feature_dim[0], d_state, n_skip_cab[1], headdim, bias, dropout)
+        self.skip_attn3 = SkipBlock(feature_dim[1], d_state, n_skip_cab[2], headdim, bias, dropout)
 
         # Bottleneck 
         self.bottleneck = nn.Sequential(*[
             VSSBlock(
                 hidden_dim = feature_dim[2],
                 d_state = d_state,
+                headdim = headdim,
                 drop_path = dropout,
                 bias = bias
             ) for _ in range(n_bottleneck_cab)
@@ -66,13 +69,13 @@ class PromptUnet(nn.Module):
 
         # Decoder - 3 UpBlocks
         self.prompt_level3 = PromptBlock(prompt_dim[2], len_prompt[2], prompt_size[2], feature_dim[2], learnable_prompt)
-        self.dec_level3 = UpBlock(feature_dim[2], d_state, prompt_dim[2], n_dec_cab[2], bias, dropout, n_history)
+        self.dec_level3 = UpBlock(feature_dim[2], d_state, prompt_dim[2], n_dec_cab[2], headdim, bias, dropout, n_history)
 
         self.prompt_level2 = PromptBlock(prompt_dim[1], len_prompt[1], prompt_size[1], feature_dim[1], learnable_prompt)
-        self.dec_level2 = UpBlock(feature_dim[1], d_state, prompt_dim[1], n_dec_cab[1], bias, dropout, n_history)
+        self.dec_level2 = UpBlock(feature_dim[1], d_state, prompt_dim[1], n_dec_cab[1], headdim, bias, dropout, n_history)
 
         self.prompt_level1 = PromptBlock(prompt_dim[0], len_prompt[0], prompt_size[0], feature_dim[0], learnable_prompt)
-        self.dec_level1 = UpBlock(feature_dim[0], d_state, prompt_dim[0], n_dec_cab[0], bias, dropout, n_history)
+        self.dec_level1 = UpBlock(feature_dim[0], d_state, prompt_dim[0], n_dec_cab[0], headdim, bias, dropout, n_history)
 
         # OutConv
         self.final_proj = FinalProjection(n_feat0, out_chans)
@@ -158,6 +161,7 @@ class NormPromptUnet(nn.Module):
         n_bottleneck_cab: int,
         learnable_prompt=False,
         adaptive_input=False,
+        headdim: int,
         n_buffer=0,
         n_history=0,
     ):
@@ -178,6 +182,7 @@ class NormPromptUnet(nn.Module):
                                n_bottleneck_cab=n_bottleneck_cab,
                                learnable_prompt = learnable_prompt,
                                adaptive_input=adaptive_input,
+                               headdim=headdim,
                                n_buffer = n_buffer,
                                n_history= n_history,
                                )
@@ -387,6 +392,7 @@ class PromptMR(nn.Module):
                     n_bottleneck_cab=n_bottleneck_cab,
                     learnable_prompt=learnable_prompt,
                     adaptive_input=adaptive_input,
+                    headdim=n_feat0,    # choose this so that headdim allways fits with the feature space
                     n_buffer = n_buffer,
                     n_history=n_history
                 ),
@@ -498,6 +504,7 @@ class SensitivityModel(nn.Module):
                                         n_skip_cab=n_skip_cab,
                                         n_bottleneck_cab=n_bottleneck_cab,
                                         learnable_prompt = learnable_prompt,
+                                        headdim=n_feat0,    # choose this so that headdim allways fits with the feature space
                                         )
         self.kspace_acs_extractor = KspaceACSExtractor(mask_center)
         
@@ -594,14 +601,14 @@ def main():
     sens_prompt_dim  = [48, 96, 192]
     len_prompt       = [5, 5, 5]
     prompt_size      = [64, 32, 16]
-    n_enc_cab        = [2, 2, 2]
-    n_dec_cab        = [2, 2, 2]
+    n_enc_cab        = [2, 2, 3]
+    n_dec_cab        = [2, 2, 3]
     n_skip_cab       = [1, 1, 1]
     n_bottleneck_cab = 3
     learnable_prompt = False
-    adaptive_input   = True
-    n_buffer         = 4
-    n_history        = 11
+    adaptive_input   = False
+    n_buffer         = 0
+    n_history        = 0
     use_sens_adj     = True
     height, width    = 512, 256
 
