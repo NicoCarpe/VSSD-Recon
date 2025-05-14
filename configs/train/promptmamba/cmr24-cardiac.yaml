@@ -4,7 +4,8 @@ data:
     slice_dataset: data.CmrxReconSliceDataset
     data_path: /home/nicocarp/scratch/PromptUMamba/mridatasets/cmrxrecon2024
     challenge: multicoil
-    volume_sample_rate: 0.01
+    volume_sample_rate: 0.02
+    val_volume_sample_rate: 0.02
     data_balancer:
       class_path: data.BalanceSampler
       init_args: 
@@ -48,6 +49,7 @@ trainer:
   devices: 2
   num_nodes: 1
   max_epochs: 12
+  # accumulate_grad_batches: 2
   logger: 
     class_path: lightning.pytorch.loggers.WandbLogger
     init_args:

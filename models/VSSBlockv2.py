@@ -164,13 +164,9 @@ class SS2D(nn.Module):
         seq_idx=None
     ):
         """
-        u: (B, C, H, W)
-        Returns: (B, C, H, W)
+        u: (B, H, W, C)
+        Returns: (B, H, W, C)
         """        
-        
-
-        # standard format for vision models
-        u = rearrange(u, "b c h w -> b h w c")
         batch, H, W, _ = u.shape
 
         assert scan_mode in ["unidi", "bidi", "cross2d"]
@@ -293,17 +289,22 @@ class VSSBlock(nn.Module):
     def __init__(
         self,
         hidden_dim: int = 0,
+        d_state: int = 64,
         drop_path: float = 0,
         norm_layer: Callable[..., torch.nn.Module] = partial(nn.LayerNorm, eps=1e-6),
         attn_drop_rate: float = 0,
-        d_state: int = 64,
+        bias: bool = False,
         **kwargs,
     ):
         super().__init__()
         self.ln_1 = norm_layer(hidden_dim)
-        self.self_attention = SS2D(d_model=hidden_dim, d_state=d_state, dropout=attn_drop_rate, **kwargs)
+        self.ssm = SS2D(d_model=hidden_dim, d_state=d_state, dropout=attn_drop_rate, bias=bias, **kwargs)
         self.drop_path = DropPath(drop_path)
 
-    def forward(self, input: torch.Tensor):
-        x = input + self.drop_path(self.self_attention(self.ln_1(input)))
-        return x
+    def forward(self, x: torch.Tensor):
+        x_ln = x.permute(0, 2, 3, 1).contiguous()       # [B,C,H,W] --> [B,H,W,C]
+        x_ln = self.ln_1(x_ln)                          # norm across C    
+        out = self.drop_path(self.ssm(x_ln))
+        out = out.permute(0, 3, 1, 2).contiguous()    # [B,H,W,C] --> [B,C,H,W]
+        
+        return x + out

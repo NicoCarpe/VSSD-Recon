@@ -1,5 +1,5 @@
-# Description: default configuration for PromptMR model, may vary for different datasets
-# NOTE: we are trying to fit feature dims into a headdim of 48, so might need to adjust a lot
+# Description: default configuration for PromptMamba model, may vary for different datasets
+
 model:
   class_path: pl_modules.PromptMrModule
   init_args:
@@ -13,16 +13,16 @@ model:
     sens_prompt_dim: [48,96,192]
     len_prompt: [5,5,5]
     prompt_size: [64,32,16]
-    n_enc_cab: [2,2,2]
-    n_dec_cab: [2,2,2]
+    n_enc_cab: [2,2,3]
+    n_dec_cab: [2,2,3]
     n_skip_cab: [1,1,1]
-    n_bottleneck_cab: 4    
+    n_bottleneck_cab: 3    
     no_use_ca: false
     learnable_prompt: false
     adaptive_input: false
     n_buffer: 0
     n_history: 0
-    use_sens_adj: True
+    use_sens_adj: true
     lr_gamma: 0.1
     weight_decay: 1e-2
     use_checkpoint: true

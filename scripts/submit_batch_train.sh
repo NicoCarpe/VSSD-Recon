@@ -1,6 +1,6 @@
 #!/bin/bash -l
 #SBATCH -J promptumamba_train
-#SBATCH --time=0-15:00:00
+#SBATCH --time=1-00:30:00
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=2
 #SBATCH --gpus-per-node=v100l:2
@@ -20,7 +20,7 @@ export OMP_NUM_THREADS=$SLURM_CPUS_PER_TASK
 # Point to your project
 export PROJECT_ROOT=/home/nicocarp/scratch/PromptUMamba
 export PYTHONPATH=$PROJECT_ROOT:$PYTHONPATH
-# export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
 # —————— WandB configuration ——————
 # Load all variables from .env
