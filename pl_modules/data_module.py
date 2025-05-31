@@ -217,6 +217,9 @@ class DataModule(L.LightningDataModule):
             batch_size=self.batch_size,
             num_workers= self.num_workers,
             worker_init_fn=worker_init_fn,
+            pin_memory=True,
+            # prefetch_factor=1,
+            # persistent_workers=False,
             sampler=sampler,
             shuffle=is_train if sampler is None else False,
         )
@@ -354,6 +357,9 @@ class InferenceDataModule(L.LightningDataModule):
             batch_size=batch_size,
             num_workers= self.num_workers,
             worker_init_fn=worker_init_fn,
+            pin_memory=True, 
+            # prefetch_factor=1,
+            # persistent_workers=False,
             batch_sampler=batch_sampler,
             shuffle=shuffle,
         )

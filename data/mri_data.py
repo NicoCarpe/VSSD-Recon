@@ -388,6 +388,10 @@ class CmrxReconSliceDataset(torch.utils.data.Dataset):
         kspace = []
         with h5py.File(str(fname), 'r') as hf:
             kspace_volume = hf["kspace"]
+            
+            # Since 2025 dataset has non-temporal training data
+            kspace_volume = kspace_volume[None] if len(kspace_volume.shape) != 5 else kspace_volume
+
             attrs = dict(hf.attrs)
             num_t = attrs['shape'][0]
             num_slices = attrs['shape'][1]
@@ -423,19 +427,24 @@ class CmrxReconInferenceSliceDataset(torch.utils.data.Dataset):
         # get all the kspace mat files from root, under folder or its subfolders
         volume_paths = root.glob('**/*.mat')
 
-        if '2023' in str(self.root):
-            self.year = 2023 
+        if '2025' in str(self.root):
+            self.year = 2025 
         elif '2024' in str(self.root):
             self.year = 2024
+        elif '2023' in str(self.root):
+            self.year = 2023
         else:
             raise ValueError('Invalid dataset root')
         #
         if self.year == 2023:
-            # filter out files contains '_mask.mat'
-            self.volume_paths = [str(path) for path in volume_paths if '_mask.mat' not in str(path)]
+            self.volume_paths = [str(path) for path in volume_paths if '_mask_' not in str(path)]
             
         elif self.year == 2024:
             self.volume_paths = [str(path) for path in volume_paths if '_mask_' not in str(path)]
+        
+        elif self.year == 2023:
+            # filter out files contains '_mask.mat'
+            self.volume_paths = [str(path) for path in volume_paths if '_mask.mat' not in str(path)]
         
         self.volume_paths = [pp for pp in self.volume_paths if raw_sample_filter(pp)]
         print('number of inference paths: ', len(self.volume_paths))
@@ -512,7 +521,12 @@ class CmrxReconInferenceSliceDataset(torch.utils.data.Dataset):
         """
         kspace_volume = load_kdata(path)
         kspace_volume = kspace_volume[None] if len(kspace_volume.shape) != 5 else kspace_volume # blackblood has no time dimension
-        kspace_volume = kspace_volume.transpose(0, 1, 2, 4, 3)
+        if self.year == 2025:
+            # (ny, nx, nc, nz, nt) --> (nt, nz, nc, ny, nx)
+            kspace_volume = kspace_volume.transpose(4, 3, 2, 0, 1)
+        else:
+            # (nt, nz, nc, nx, ny) --> (nt, nz, nc, ny, nx)
+            kspace_volume = kspace_volume.transpose(0, 1, 2, 4, 3)
         
         if self.year==2023:
             mask_path = path.replace('.mat', '_mask.mat')

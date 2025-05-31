@@ -5,6 +5,7 @@ This source code is licensed under the MIT license found in the
 LICENSE file in the root directory of this source tree.
 """
 import os
+import gc
 import pathlib
 from argparse import ArgumentParser
 from collections import defaultdict
@@ -12,7 +13,10 @@ from collections import defaultdict
 import numpy as np
 import lightning as L
 import torch
-from torchmetrics.metric import Metric
+from torchmetrics.metric                import Metric
+from torchmetrics.functional.regression import mean_squared_error
+from torchmetrics.functional.image      import structural_similarity_index_measure
+
 
 from mri_utils import utils, save_reconstructions
 
@@ -168,6 +172,7 @@ class MriModule(L.LightningModule):
         target_norms = defaultdict(dict)
         ssim_vals = defaultdict(dict)
         max_vals = dict()
+
         for i, fname in enumerate(val_logs["fname"]):
             slice_num = int(val_logs["slice_num"][i].cpu())
             maxval = val_logs["max_value"][i].cpu().numpy()
@@ -184,6 +189,7 @@ class MriModule(L.LightningModule):
                 utils.ssim(target[None, ...], output[None, ...], maxval=maxval)
             ).view(1)
             max_vals[fname] = maxval
+
         val_step_out_dict = {
             "val_loss": val_logs["loss"],
             "mse_vals": dict(mse_vals),
@@ -191,7 +197,18 @@ class MriModule(L.LightningModule):
             "ssim_vals": dict(ssim_vals),
             "max_vals": max_vals,
         }
+
         self.validation_step_outputs.append(val_step_out_dict)
+
+        # ─────────── CLEAR LIGHTNING’S INTERNAL BUFFER ───────────
+        # (so it doesn’t accumulate every batch’s outputs forever)
+        # See Issue: https://github.com/Lightning-AI/pytorch-lightning/issues/19398
+        # Should be addressed by this PR: https://github.com/Lightning-AI/pytorch-lightning/pull/20730
+        if hasattr(self.trainer, "validation_loop"):
+            self.trainer.validation_loop._results = []
+        gc.collect()
+        # ──────────────────────────────────────────────────────────
+         
         # return {
         #     "val_loss": val_logs["loss"],
         #     "mse_vals": dict(mse_vals),
@@ -286,9 +303,9 @@ class MriModule(L.LightningModule):
             torch.tensor(len(losses), dtype=torch.float)
         )
 
-        self.log("validation_loss", val_loss / tot_slice_examples, prog_bar=True) #,sync_dist=True)
+        self.log("validation_loss", val_loss / tot_slice_examples, prog_bar=True, sync_dist=True)
         for metric, value in metrics.items():
-            self.log(f"val_metrics/{metric}", value / tot_examples) #,sync_dist=True)
+            self.log(f"val_metrics/{metric}", value / tot_examples, sync_dist=True)
 
         # print('debug epoch end: ', len(self.validation_step_outputs), metrics["ssim"]/tot_examples, tot_examples)
         self.validation_step_outputs.clear()

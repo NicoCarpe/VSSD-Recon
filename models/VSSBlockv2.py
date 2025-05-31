@@ -39,16 +39,14 @@ class SS2D(nn.Module):
         dt_init_floor=1e-4,
         dt_limit=(0.0, float("inf")),
         learnable_init_states=False,
-        activation="swish",
+        activation=nn.GELU(),
         bias=False,
         conv_bias=True,
         # Fused kernel and sharding options
-        chunk_size=256,
-        use_mem_eff_path=True,
+        chunk_size=64,
+        use_mem_eff_path=False,
         layer_idx=None,  # Absorb kwarg for general module
-        # alternate architecture
-        disable_z = False,
-        oact = False,
+        oact = True,
         dropout=0.0,
         device=None,
         dtype=None,
@@ -67,27 +65,22 @@ class SS2D(nn.Module):
         self.D_has_hdim = D_has_hdim
         self.dt_limit = dt_limit
         self.learnable_init_states = learnable_init_states
-        self.act = activation    # NOTE: VMamba uses nn.GELU(), Mamba2 uses nn.SILU()
+        self.act = activation    # NOTE: VMamba uses nn.GELU(), Mamba2 uses nn.SiLU()
         self.chunk_size = chunk_size
         self.use_mem_eff_path = use_mem_eff_path
         self.layer_idx = layer_idx
         
         # VMamba inits 
-        self.k_groups = 4
-        self.disable_z = disable_z
+        self.K = 4
         self.oact = oact
 
-        if self.disable_z:
-            # Order: [z, x, B, C, dt]
-            d_in_proj = 2 * self.d_inner + 2 * self.ngroups * self.d_state + self.nheads
-        else:
-            # Order: [x, B, C, dt]
-            d_in_proj = self.d_inner + 2 * self.ngroups * self.d_state + self.nheads
+        # Order: [z, x, B, C, dt]
+        d_in_proj = 2 * self.d_inner + 2 * self.ngroups * self.d_state + self.nheads
 
-        self.in_proj = nn.Linear(self.d_model, d_in_proj, bias=bias, **factory_kwargs)
+        self.in_proj = nn.Linear(d_model, d_in_proj, bias=bias, **factory_kwargs)
   
         if self.learnable_init_states:
-            self.init_states = nn.Parameter(torch.zeros(self.nheads, self.k_groups, self.headdim, self.d_state, **factory_kwargs))
+            self.init_states = nn.Parameter(torch.zeros(self.nheads, self.K, self.headdim, self.d_state, **factory_kwargs))
             self.init_states._no_weight_decay = True
 
        
@@ -110,30 +103,34 @@ class SS2D(nn.Module):
         # self.conv2d.weight._no_weight_decay = True
 
         # Initialize log dt bias
-        dts = torch.exp(
-            torch.rand(self.k_groups, self.nheads, **factory_kwargs) * (math.log(dt_max) - math.log(dt_min))
+        dt = torch.exp(
+            torch.rand(self.nheads, **factory_kwargs) * (math.log(dt_max) - math.log(dt_min))
             + math.log(dt_min)
         )
-        dts = torch.clamp(dts, min=dt_init_floor)
+        dt = torch.clamp(dt, min=dt_init_floor)
         # Inverse of softplus: https://github.com/pytorch/pytorch/issues/72759
-        inv_dts = dts + torch.log(-torch.expm1(-dts))
-        self.dts_bias = nn.Parameter(inv_dts)
+        inv_dts = dt + torch.log(-torch.expm1(-dt))
+        # dt_bias: (nheads,)
+        self.dt_bias = nn.Parameter(inv_dts)
         # Just to be explicit. Without this we already don't put wd on dt_bias because of the check
         # name.endswith("bias") in param_grouping.py
-        self.dts_bias._no_weight_decay = True
+        self.dt_bias._no_weight_decay = True
 
-        # A parameter
+        # As parameter:
+        #  (K, nheads)
         assert A_init_range[0] > 0 and A_init_range[1] >= A_init_range[0]
-        As = torch.empty(self.k_groups, self.nheads, dtype=torch.float32, device=device).uniform_(*A_init_range)
+        As = torch.empty(self.K, self.nheads, dtype=torch.float32, device=device).uniform_(*A_init_range)
         A_logs = torch.log(As).to(dtype=dtype)
+        # A_logs:
         self.A_logs = nn.Parameter(A_logs)
         # self.register_buffer("A_log", torch.zeros(self.nheads, dtype=torch.float32, device=device), persistent=True)
         self.A_logs._no_weight_decay = True
 
-        # D "skip" parameter
+        # Ds "skip" parameter:
+        #  (K, nheads)  or (K, d_inner) if D_has_hdim
         self.Ds = nn.Parameter(
             torch.ones(
-                self.k_groups, 
+                self.K, 
                 self.d_inner if self.D_has_hdim else self.nheads,
                 device=device
             )
@@ -157,15 +154,15 @@ class SS2D(nn.Module):
         # ==============================
         force_fp32=False, # True: input fp32
         # ==============================
-        selective_scan_backend = None,
+        selective_scan_backend = "triton",
         scan_mode = "cross2d",
         scan_force_torch = False,
         # ==============================
         seq_idx=None
     ):
         """
-        u: (B, H, W, C)
-        Returns: (B, H, W, C)
+        u: (batch, H, W, channel)
+        Returns: (batch, H, W, channel)
         """        
         batch, H, W, _ = u.shape
 
@@ -175,24 +172,20 @@ class SS2D(nn.Module):
         _scan_mode = dict(cross2d=0, unidi=1, bidi=2, cascade2d=3)[scan_mode]
 
         # Input Projection
-        if not self.disable_z:
-            zxbcdt = self.in_proj(u)  # (B, H, W, d_in_proj)
-            
-            z, xBC, dt = torch.split(
-                    zxbcdt, [self.d_inner, self.d_inner + 2 * self.ngroups * self.d_state, self.nheads], 
-                    dim=-1
-                )
+        zxbcdt = self.in_proj(u)  # (batch, H, W, d_in_proj)
         
-        else:
-            xbcdt = self.in_proj(u)  # (B, H, W, d_in_proj)
-            
-            xBC, dt = torch.split(
-                    xbcdt, [self.d_inner + 2 * self.ngroups * self.d_state, self.nheads], 
-                    dim=-1
-                )
+        z, xBC, dt = torch.split(
+                zxbcdt, [self.d_inner, self.d_inner + 2 * self.ngroups * self.d_state, self.nheads], 
+                dim=-1
+            )  
 
         # If the model is loaded in fp16, without the .float() here, A might be -inf
-        As = -torch.exp(self.A_logs.float())  # (nheads) or (d_inner, d_state)
+        As = -torch.exp(self.A_logs.float())  # (K, nheads)
+        As = As.view(-1) # (K * nheads)
+
+        # dt_bias: (nheads) → (K * nheads)
+        dts_bias = self.dt_bias.float().repeat(self.K)
+
         initial_states=repeat(self.init_states, "... -> b ...", b=batch) if self.learnable_init_states else None
         dt_limit_kwargs = {} if self.dt_limit == (0.0, float("inf")) else dict(dt_limit=self.dt_limit)
 
@@ -220,11 +213,9 @@ class SS2D(nn.Module):
             #     **dt_limit_kwargs,
             # )
 
-        else:
-            dt = F.softplus(dt + self.dt_bias)  # (B, L, nheads)
-            
+        else:            
             # 2D Convolution
-            # (B, H, W, self.d_inner + 2 * ngroups * d_state)
+            # (batch, H, W, self.d_inner + 2 * ngroups * d_state)
             xBC = rearrange(xBC, "b h w c -> b c h w")
             xBC = self.conv2d(xBC)  #NOTE: electing not to use truncation, should be covered by padding [:, :-(self.d_conv - 1)]
             xBC = rearrange(xBC, "b c h w -> b h w c")
@@ -234,52 +225,88 @@ class SS2D(nn.Module):
             # These correspond to V, K, Q respectively in the SSM/attention duality
             x, B, C = torch.split(xBC, [self.d_inner, self.ngroups * self.d_state, self.ngroups * self.d_state], dim=-1)
 
-            # Expand B, C, dt to K directions
-            Bs = B.unsqueeze(3).expand(-1, -1, -1, self.k_groups, -1)  # (B, H, W, K, ngroups*d_state)
-            Cs = C.unsqueeze(3).expand(-1, -1, -1, self.k_groups, -1)  # (B, H, W, K, ngroups*d_state)
-            dts = dt.unsqueeze(3).expand(-1, -1, -1, self.k_groups, -1)  # (B, H, W, K, nheads)
-            xs = cross_scan_fn(x.view(B, H, W, self.d_inner), in_channel_first=False, out_channel_first=False, scans=_scan_mode, force_torch=scan_force_torch) # (B, H, W, K, d_inner)
-
             # Find the sequence length
-            L = H * W
+            L = H*W
+
+            # Expand to K directions
+            Bs = B.unsqueeze(3).expand(-1, -1, -1, self.K, -1)  # (batch, H, W, K, ngroups*d_state)
+            Cs = C.unsqueeze(3).expand(-1, -1, -1, self.K, -1)  # (batch, H, W, K, ngroups*d_state)
+            dts = dt.unsqueeze(3).expand(-1, -1, -1, self.K, -1)  # (batch, H, W, K, nheads)
+
+            # build the four sequences
+            x_chw  = x.permute(0,3,1,2).contiguous()                        # [B, C, H, W]
+            x_flat = x_chw.view(batch, -1, L)                               # [B, C, L]
+            x_t    = x_chw.transpose(2,3).contiguous().view(batch, -1, L)   # [B, C, L]
+
+            xs = torch.stack([
+                x_flat,            # → 
+                x_t,               # ↓
+                x_flat.flip(-1),   # ←
+                x_t   .flip(-1),   # ↑
+            ], dim=1)                    # [B, K=4, C, L]
+
+            # xs = cross_scan_fn(x.view(batch, H, W, self.d_inner), in_channel_first=False, out_channel_first=False, scans=_scan_mode, force_torch=scan_force_torch) # (batch, H, W, K, d_inner)
 
             # Flatten spatial dims
-            Bs = Bs.contiguous().view(B, L, self.k_groups, self.ngroups, self.d_state)  # (B, L, K, ngroups, d_state)
-            Cs = Cs.contiguous().view(B, L, self.k_groups, self.ngroups, self.d_state)
-            dts = dts.contiguous().view(B, L, self.k_groups, self.nheads)  # (B, L, K, nheads)
-            xs = xs.contiguous().view(B, L, self.k_groups, self.d_inner)  # (B, L, K, d_inner)
+            Bs = Bs.contiguous().view(batch, L, self.K, self.ngroups*self.d_state)  # (batch, L, K, ngroups, d_state)
+            Cs = Cs.contiguous().view(batch, L, self.K, self.ngroups*self.d_state)  # (batch, L, K, ngroups, d_state)
+            dts = dts.contiguous().view(batch, L, self.K, self.nheads)  # (batch, L, K, nheads)
+            xs = xs.permute(0,1,3,2).reshape(batch, L, self.K, self.d_inner)
+            
+            # xs = xs.contiguous().view(batch, L, self.K, self.d_inner)  # (batch, L, K, d_inner)
 
+            Ds = rearrange(self.Ds, "k (h p) -> (k h) p", p=self.headdim) if self.D_has_hdim else self.Ds.view(-1)
             if force_fp32:
                 xs, dts, Bs, Cs = to_fp32(xs, dts, Bs, Cs)
 
             ys = mamba_chunk_scan_combined(
                 rearrange(xs, "b l k (h p) -> b l (k h) p", p=self.headdim),
-                dts,
+                rearrange(dts, "b l k h -> b l (k h)"),
                 As,
                 rearrange(Bs, "b l k (g n) -> b l (k g) n", g=self.ngroups),
                 rearrange(Cs, "b l k (g n) -> b l (k g) n", g=self.ngroups),
                 chunk_size=self.chunk_size,
-                Ds=rearrange(self.Ds, "k (h p) -> (k h) p", p=self.headdim) if self.D_has_hdim else self.D,
+                D=Ds, 
                 z=None,
-                dt_bias=self.dt_bias,
+                dt_bias=dts_bias,
                 dt_softplus=True,
                 seq_idx=None,
                 initial_states=initial_states,
                 **dt_limit_kwargs,
             )
-            ys = rearrange(ys, "b l (k h) p -> b l k (h p)")
-            y: torch.Tensor = cross_merge_fn(ys.view(B, H, W, self.k_groups, self.d_inner), in_channel_first=False, out_channel_first=False, scans=_scan_mode, force_torch=scan_force_torch)
+
+            # ys has shape [B, L, K·H, P] after the scan, where H=self.nheads, 
+            # P=self.headdim so that H*P = self.d_inner
+            # First pull it back to [B, L, K, H, P]:
+            out_y = ys.view(batch, L, self.K, self.nheads, self.headdim)
+
+            # Then swap L↔(H·P) and split out the four directions:
+            # We want [B, K, H·P, L], so:
+            out_y = out_y.permute(0, 2, 3, 4, 1).reshape(batch, self.K, self.d_inner, L)
+
+            # Now reconstruct the four directional maps without ever naming “C”:
+            # → (0), ↓ (1), ← (2), ↑ (3)
+            y0 = out_y[:, 0].view(batch, -1, H, W)                     # →  [B, C, H, W]
+            y1 = out_y[:, 1].view(batch, -1, W, H).transpose(2, 3)     # ↓  [B, C, H, W]
+            y2 = out_y[:, 2].view(batch, -1, H, W).flip(-1)            # ←  [B, C, H, W]
+            y3 = out_y[:, 3].view(batch, -1, W, H).transpose(2, 3).flip(-1)  # ↑  [B, C, H, W]
+
+            # Sum them and put back into [B, H, W, C]
+            y = (y0 + y1 + y2 + y3).permute(0, 2, 3, 1).contiguous()  # [B, H, W, C]
+
+            # ys = rearrange(ys, "b l (k h) p -> b l k (h p)", k=self.K)
+            # y: torch.Tensor = cross_merge_fn(ys.view(batch, H, W, self.K, self.d_inner), in_channel_first=False, out_channel_first=False, scans=_scan_mode, force_torch=scan_force_torch)
 
             # NOTE: again we are not using the rmsnorm as it is implemented only for 1D
             # Multiply "gate" branch and apply extra normalization layer
             # y = self.norm(y, z)
+            # y = (self.out_norm(y.view(batch, H, W, -1))).to(x.dtype)
+            y = self.out_norm(y).to(x.dtype)
 
-            y = (self.out_norm(y.view(B, H, W, -1))).to(x.dtype)
-            y = self.out_act(y)
+            # Apply output activation and gating
+            y = self.out_act(y) * z
 
-            if not self.disable_z:
-                y = y * z
-
+            # Apply output projection and dropout
             out = self.dropout(self.out_proj(y))
 
         return out

@@ -6,6 +6,7 @@ import os
 from os.path import join
 import json
 import argparse
+from einops import rearrange
 import torch
 from tqdm import tqdm
 import h5py
@@ -53,7 +54,7 @@ if __name__ == '__main__':
                         default='/common/users/bx64/dataset/CMRxRecon2024/home2/Raw_data/MICCAIChallenge2024/ChallengeData/MultiCoil',
                         help='path to the original matlab data')
     parser.add_argument('--split_json', type=str, default='configs/data_split/cmr24-cardiac.json', help='path to the split json file')
-    parser.add_argument('--year', type=int, required=True, choices=[2024, 2023], help='year of the dataset')
+    parser.add_argument('--year', type=int, required=True, choices=[2025, 2024, 2023], help='year of the dataset')
     args = parser.parse_args()
     
     save_folder = args.output_h5_folder
@@ -68,10 +69,12 @@ if __name__ == '__main__':
         os.makedirs(save_folder)
         
     print('## step 1: convert matlab training dataset to h5 dataset')
-
-    file_list = sorted(glob.glob(join(mat_folder, '*/TrainingSet/FullSample/P*/*.mat')))
+    if year == 2024:
+        file_list = sorted(glob.glob(join(mat_folder, '*/TrainingSet/FullSample/P*/*.mat')))
+    elif year ==2025:
+        file_list = sorted(glob.glob(join(mat_folder, '*/TrainingSet/FullSample/*/*/P*/*.mat')))
     print('number of total matlab files: ', len(file_list))
-    
+
     # check if cuda is available
     if torch.cuda.is_available():
         device = torch.device('cuda')
@@ -80,10 +83,16 @@ if __name__ == '__main__':
 
     for ff in tqdm(file_list):
         ##* get info from path
+        if year == 2025:
+            center = ff.split('/')[-4]
+            machine = ff.split('/')[-3]
         fid = ff.split('/')[-2]
         ftype = ff.split('/')[-1].split('.')[0]
-        save_name = f'{fid}_{ftype}'
-        
+        if year == 2025:
+            save_name = f'{fid}_{center}_{machine}_{ftype}'
+        else:
+            save_name = f'{fid}_{ftype}'
+            
         ##*remove bad files
         if remove_bad_files(save_name) and year == 2024:
             continue
@@ -92,7 +101,15 @@ if __name__ == '__main__':
         kdata = load_kdata(ff)
         
         ##* swap phase_encoding and readout
-        kdata = kdata.swapaxes(-1,-2)
+        # (nt, nz, nc, nx, ny) --> (nt, nz, nc, ny, nx)  
+        if year == 2024:   
+            kdata = kdata.swapaxes(-1,-2)
+        
+        elif year == 2025:   
+            if len(kdata.shape) == 5:
+                kdata = rearrange(kdata, 'ny nx nc nz nt -> nt nz nc ny nx')
+            elif len(kdata.shape) == 4:   # as 2025 blackblood and other non temporal data in training
+                kdata = rearrange(kdata, 'ny nx nc nz -> nz nc ny nx')
         
         ##* remove bad slices
         if year == 2024:
@@ -117,8 +134,11 @@ if __name__ == '__main__':
         file.attrs['encoding_size'] = (kdata.shape[-2],kdata.shape[-1],1)
         file.attrs['recon_size'] = (kdata.shape[-2],kdata.shape[-1],1)
         file.attrs['patient_id'] = save_name
+        if year == 2025:
+            file.attrs['machine'] = machine
+            file.attrs['center'] = center
         file.close()
-    
+
     print('## step 2: split h5 dataset to train and val using symbolic links')
     # split dataset to train/ val according to provided json file
     with open(split_json, 'r', encoding="utf-8") as f:

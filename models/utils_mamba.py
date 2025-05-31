@@ -9,8 +9,12 @@ import torch.nn.functional as F
 from einops import rearrange
 
 from data import transforms
-# from .VSSBlock import VSSBlock
-from .VSSBlockv2 import VSSBlock
+try:
+    from .VSSBlock import VSSBlock
+    # from .VSSBlockv2 import VSSBlock
+except:
+    from VSSBlock import VSSBlock
+    # from VSSBlockv2 import VSSBlock
 
 
 ##########################################################################

@@ -8,9 +8,18 @@ from torch import nn
 import torch.nn.functional as F
 from einops import rearrange
 from mri_utils import ifft2c, rss, complex_abs, rss_complex, sens_expand, sens_reduce
-from .utils_mamba import KspaceACSExtractor, DownBlock, UpBlock, SkipBlock, PromptBlock, PatchEmbed, FinalProjection
-# from .VSSBlock import VSSBlock
-from .VSSBlockv2 import VSSBlock
+
+try:
+    from .utils_mamba import KspaceACSExtractor, DownBlock, UpBlock, SkipBlock, PromptBlock, PatchEmbed, FinalProjection
+except:
+    from  utils_mamba import KspaceACSExtractor, DownBlock, UpBlock, SkipBlock, PromptBlock, PatchEmbed, FinalProjection
+
+try:
+    from .VSSBlock import VSSBlock
+    # from .VSSBlockv2 import VSSBlock
+except:
+    from VSSBlock import VSSBlock
+    # from VSSBlockv2 import VSSBlock
 
 
 class PromptUnet(nn.Module): 
@@ -30,7 +39,7 @@ class PromptUnet(nn.Module):
                  learnable_prompt=False,
                  adaptive_input=False,
                  d_state=16,
-                 headdim: int,
+                 headdim=96,
                  dropout=0,
                  n_buffer=0,
                  n_history=0,
@@ -161,7 +170,7 @@ class NormPromptUnet(nn.Module):
         n_bottleneck_cab: int,
         learnable_prompt=False,
         adaptive_input=False,
-        headdim: int,
+        headdim=96,
         n_buffer=0,
         n_history=0,
     ):

@@ -12,6 +12,7 @@ import h5py
 import numpy as np
 from skimage.metrics import peak_signal_noise_ratio, structural_similarity
 from multiprocessing import Pool
+import scipy.io as spio
 
 def mse(gt: np.ndarray, pred: np.ndarray) -> np.ndarray:
     """Compute Mean Squared Error (MSE)"""
@@ -127,16 +128,27 @@ def loadmat_group(group):
 
 def loadmat(filename):
     """
-    Load Matlab v7.3 format .mat file using h5py.
+    Load Matlab .mat file.
+      - v7.3 (HDF5) via h5py
+      - fallback to v7 via scipy.io.loadmat
     """
-    with h5py.File(filename, 'r') as f:
-        data = {}
-        for k, v in f.items():
-            if isinstance(v, h5py.Dataset):
-                data[k] = v[()]
-            elif isinstance(v, h5py.Group):
-                data[k] = loadmat_group(v)
-    return data
+    try:
+        # Try HDF5-based
+        with h5py.File(filename, 'r') as f:
+            data = {}
+            for k, v in f.items():
+                if isinstance(v, h5py.Dataset):
+                    data[k] = v[()]
+                else:
+                    data[k] = loadmat_group(v)
+        return data
+
+    except (OSError, IOError):
+        # Fallback to the old MATLAB format
+        raw = spio.loadmat(filename, squeeze_me=True, struct_as_record=False)
+        # strip out MATLAB metadata keys
+        return {k: v for k, v in raw.items() if not k.startswith('__')}
+
 
 def load_shape(filename):
     """
@@ -157,13 +169,27 @@ def load_mask(filename):
     return mask
 
 def load_kdata(filename):
-    '''
-    load kdata from .mat file
+    """
+    load kdata from .mat file (v7.3 or legacy v7)
     return shape: [t,nz,nc,ny,nx]
-    '''
+    """
     data = loadmat(filename)
-    keys = list(data.keys())[0]
-    kdata = data[keys]
-    kdata = kdata['real'] + 1j*kdata['imag']
-    return kdata
+    key  = next(iter(data))
+    arr  = data[key]
+
+    # legacy MAT stored a native complex array
+    if isinstance(arr, np.ndarray) and np.iscomplexobj(arr):
+        return arr
+
+    # If it's a numpy structured array (from scipy.loadmat with struct_as_record=False)
+    if hasattr(arr, 'dtype') and arr.dtype.names is not None:
+        # dtype.names might be ('real','imag')
+        return arr['real'] + 1j*arr['imag']
+
+    # v7.3 HDF5 or struct‐based fallback: dict or recarray
+    # If it's a simple dict (from our loadmat_group for HDF5)
+    if isinstance(arr, dict):
+        return arr['real'] + 1j*arr['imag']
+
+    raise RuntimeError(f"Unexpected kdata format for {filename}: got type {type(arr)}")
 

@@ -669,10 +669,17 @@ class CmrxRecon24MaskFunc(MaskFunc):
         self.radial_mask_bank = self._load_masks(mask_path)
 
         # mask_dict is set according to cmrxrecon24 challenge settings
-        self.mask_dict = {'uniform':[4,8,10],
-                           'kt_uniform':[4,8,12,16,20,24],
-                           'kt_random':[4,8,12,16,20,24],
-                           'kt_radial':[4,8,12,16,20,24]}
+        # self.mask_dict = {'uniform':[4,8,10],
+        #                    'kt_uniform':[4,8,12,16,20,24],
+        #                    'kt_random':[4,8,12,16,20,24],
+        #                    'kt_radial':[4,8,12,16,20,24]}
+
+        # mask_dict is set a little differnetly for cmrxrecon25 challenge
+        self.mask_dict = {'uniform':[8,16,24],
+                           'kt_uniform':[8,16,24],
+                           'kt_random':[8,16,24],
+                           'kt_radial':[8,16,24]}
+
         self.masks_pool = list(self.mask_dict.keys())
 
         self.rng = np.random.RandomState(seed)
@@ -730,7 +737,7 @@ class CmrxRecon24MaskFunc(MaskFunc):
             ##TODO: codes below need to be wrapped in a MaskFunc as other mask types
             h,w = shape[-3:-1] # (h,w)
             acc = self.rng.choice(self.mask_dict[mask_type])
-            num_low_frequencies = 16
+            num_low_frequencies = 20 # 16 for 2023, 2024 cmr datasets, use 20 for 2025
             mask_ = self.radial_mask_bank[f'acc{acc}_{w}x{h}'][:num_t]
 
             if self.seed is None: ##* training

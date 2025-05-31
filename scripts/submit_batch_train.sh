@@ -1,11 +1,11 @@
 #!/bin/bash -l
 #SBATCH -J promptumamba_train
-#SBATCH --time=1-00:30:00
+#SBATCH --time=00-0:30:00
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=2
 #SBATCH --gpus-per-node=v100l:2
-#SBATCH --cpus-per-task=4          
-#SBATCH --mem=96GB                 
+#SBATCH --cpus-per-task=2       
+#SBATCH --mem=64GB                 
 #SBATCH --account=def-punithak
 #SBATCH --mail-type=BEGIN,END,FAIL
 #SBATCH --mail-user=ngcarpen@ualberta.ca
@@ -17,10 +17,9 @@ module --force purge
 export HDF5_USE_FILE_LOCKING=FALSE
 export OMP_NUM_THREADS=$SLURM_CPUS_PER_TASK
 
-# Point to your project
+# Point to project
 export PROJECT_ROOT=/home/nicocarp/scratch/PromptUMamba
 export PYTHONPATH=$PROJECT_ROOT:$PYTHONPATH
-export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
 # —————— WandB configuration ——————
 # Load all variables from .env
@@ -46,12 +45,6 @@ source $SLURM_TMPDIR/env/bin/activate
 python -m pip install --upgrade pip
 python -m pip install --no-index -r $PROJECT_ROOT/configs/env_local.txt
 python -m pip install -r $PROJECT_ROOT/configs/env_pypi.txt
-
-python - <<'EOF'
-import torch
-print("Torch version:", torch.__version__)
-print("CUDA available:", torch.cuda.is_available())
-EOF
 
 srun python $PROJECT_ROOT/main.py fit \
     --config $PROJECT_ROOT/configs/base.yaml \

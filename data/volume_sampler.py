@@ -9,10 +9,10 @@ from typing import List, Optional, Union
 
 import torch
 import torch.distributed as dist
+from pathlib import Path
 from torch.utils.data import Sampler
 import random 
 from torch.utils.data import DistributedSampler
-
 
 
 class VolumeSampler(Sampler):
@@ -66,6 +66,15 @@ class VolumeSampler(Sampler):
         self.all_volume_names = sorted(
             set(str(raw_sample[0]) for raw_sample in self.dataset.raw_samples)
         )
+
+        # # ───── derive volume names from our COW-safe `file_names` array ─────
+        # # decode each byte-string, take its Path.stem as the volume ID
+        
+        # stems = [Path(fn.decode("utf-8")).stem for fn in self.dataset.file_names]
+
+        # # unique, sorted volume list
+        # self.all_volume_names = sorted(set(stems))
+
         self.all_volumes_split: List[List[str]] = []
         for rank_num in range(self.num_replicas):
             self.all_volumes_split.append(
@@ -85,6 +94,21 @@ class VolumeSampler(Sampler):
                 if vname in self.all_volumes_split[rank_num]:
                     rank_indices[rank_num].append(i)
                     break
+
+        # # partition that list across replicas
+        # self.all_volumes_split = [
+        #     self.all_volume_names[r:: self.num_replicas]
+        #     for r in range(self.num_replicas)
+        # ]
+
+        # # ───── map each sample‐index to its replica based on stem ─────
+        # rank_indices: List[List[int]] = [[] for _ in range(self.num_replicas)]
+        # for idx, stem in enumerate(stems):
+        #     # find which replica owns this stem
+        #     for r, vols in enumerate(self.all_volumes_split):
+        #         if stem in vols:
+        #             rank_indices[r].append(idx)
+        #             break
 
         # need to send equal number of samples to each process - take the max
         self.num_samples = max(len(indices) for indices in rank_indices)

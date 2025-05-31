@@ -1,6 +1,6 @@
 #!/bin/bash -l
 #SBATCH -J promptumamba_preproc
-#SBATCH --time=0-00:30:00
+#SBATCH --time=0-08:30:00
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1            
 #SBATCH --gpus-per-node=v100l:1             
@@ -18,7 +18,6 @@ export OMP_NUM_THREADS=$SLURM_CPUS_PER_TASK
 # Set PROJECT_ROOT and PYTHONPATH
 export PROJECT_ROOT=/home/nicocarp/scratch/PromptUMamba
 export PYTHONPATH=$PROJECT_ROOT:$PYTHONPATH
-#export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
 module purge
 
@@ -38,14 +37,8 @@ python -m pip install --upgrade pip
 python -m pip install --no-index -r $PROJECT_ROOT/configs/env_local.txt
 python -m pip install -r $PROJECT_ROOT/configs/env_pypi.txt
 
-python - <<'EOF'
-import torch
-print("Torch version:", torch.__version__)
-print("CUDA available:", torch.cuda.is_available())
-EOF
-
 srun python prepare_h5_dataset_cmrxrecon.py \
-    --input_matlab_folder $PROJECT_ROOT/raw_datasets/MICCAIChallenge2024/ChallengeData/MultiCoil \
-    --output_h5_folder $PROJECT_ROOT/mridatasets/cmrxrecon2024/h5_dataset \
-    --split_json $PROJECT_ROOT/configs/data_split/cmr24-cardiac.json \
-    --year 2024
+    --input_matlab_folder $PROJECT_ROOT/raw_datasets/MICCAIChallenge2025/ChallengeData/MultiCoil \
+    --output_h5_folder $PROJECT_ROOT/mridatasets/cmrxrecon2025/h5_dataset \
+    --split_json $PROJECT_ROOT/configs/data_split/cmr25-cardiac.json \
+    --year 2025

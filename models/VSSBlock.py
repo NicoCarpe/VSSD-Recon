@@ -219,6 +219,7 @@ class VSSBlock(nn.Module):
         self,
         hidden_dim: int = 0,        
         d_state: int = 16,
+        headdim: int = 0,
         drop_path: float = 0,
         norm_layer: Callable[..., torch.nn.Module] = partial(nn.LayerNorm, eps=1e-6),
         attn_drop_rate: float = 0,
