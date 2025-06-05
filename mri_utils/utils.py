@@ -145,7 +145,7 @@ def loadmat(filename):
 
     except (OSError, IOError):
         # Fallback to the old MATLAB format
-        raw = spio.loadmat(filename, squeeze_me=True, struct_as_record=False)
+        raw = spio.loadmat(filename)
         # strip out MATLAB metadata keys
         return {k: v for k, v in raw.items() if not k.startswith('__')}
 

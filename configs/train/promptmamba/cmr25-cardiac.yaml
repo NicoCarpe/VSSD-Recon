@@ -4,8 +4,8 @@ data:
     slice_dataset: data.CmrxReconSliceDataset
     data_path: /home/nicocarp/scratch/PromptUMamba/mridatasets/cmrxrecon2025
     challenge: multicoil
-    sample_rate: 0.1
-    val_sample_rate: 0.1
+    sample_rate: 0.5
+    val_sample_rate: 0.5
     # data_balancer:
     #   class_path: data.BalanceSampler
     #   init_args: 
@@ -22,7 +22,7 @@ data:
             num_low_frequencies: 
             - 20
             num_adj_slices: &num_adj_slices 3
-            mask_path: /home/nicocarp/scratch/PromptUMamba/mridatasets/cmrxrecon2024/mask/mask_radial.h5
+            mask_path: /home/nicocarp/scratch/PromptUMamba/mridatasets/cmrxrecon2025/mask/mask_radial.h5
         uniform_resolution: null
         use_seed: false
     val_transform:
@@ -34,7 +34,7 @@ data:
             num_low_frequencies: 
             - 20
             num_adj_slices: *num_adj_slices
-            mask_path: /home/nicocarp/scratch/PromptUMamba/mridatasets/cmrxrecon2024/mask/mask_radial.h5
+            mask_path: /home/nicocarp/scratch/PromptUMamba/mridatasets/cmrxrecon2025/mask/mask_radial.h5
         uniform_resolution: null
         use_seed: True
     combine_train_val: false
@@ -47,7 +47,7 @@ data:
 # dataset specific settings
 trainer:
   strategy: ddp
-  devices: 2
+  devices: 4
   num_nodes: 1
   max_epochs: 8
   # NOTE: automatic mixed precision seems to blow up the training

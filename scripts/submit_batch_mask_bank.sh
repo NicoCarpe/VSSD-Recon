@@ -1,6 +1,6 @@
 #!/bin/bash -l
-#SBATCH -J promptumamba_preproc
-#SBATCH --time=0-04:30:00
+#SBATCH -J promptumamba_build_bank
+#SBATCH --time=0-00:20:00
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1            
 #SBATCH --gpus-per-node=v100l:1             
@@ -37,8 +37,6 @@ python -m pip install --upgrade pip
 python -m pip install --no-index -r $PROJECT_ROOT/configs/env_local.txt
 python -m pip install -r $PROJECT_ROOT/configs/env_pypi.txt
 
-srun python prepare_h5_dataset_cmrxrecon.py \
-    --input_matlab_folder $PROJECT_ROOT/raw_datasets/MICCAIChallenge2025/ChallengeData/MultiCoil \
-    --output_h5_folder $PROJECT_ROOT/mridatasets/cmrxrecon2025/h5_dataset \
-    --split_json $PROJECT_ROOT/configs/data_split/cmr25-cardiac.json \
-    --year 2025
+srun python build_radial_mask_bank.py \
+    --mat_folder $PROJECT_ROOT/raw_datasets/MICCAIChallenge2025/ChallengeData/MultiCoil \
+    --out_h5 $PROJECT_ROOT/mridatasets/cmrxrecon2025/mask/mask_radial.h5

@@ -282,8 +282,11 @@ class CmrxReconSliceDataset(torch.utils.data.Dataset):
         self.transform = transform
 
         assert num_adj_slices % 2 == 1, "Number of adjacent slices must be odd in SliceDataset"
+        
+        # NOTE: in 2025 dataset some aquisitions have more than 12 temporal frames
         # max temporal slice number is 12
-        assert num_adj_slices <= 11, "Number of adjacent slices must be less than 11 in CMRxRecon SliceDataset"
+        # assert num_adj_slices <= 11, "Number of adjacent slices must be less than 11 in CMRxRecon SliceDataset"
+        
         self.num_adj_slices = num_adj_slices
         self.start_adj, self.end_adj = - \
             (self.num_adj_slices//2), self.num_adj_slices//2+1
@@ -387,24 +390,23 @@ class CmrxReconSliceDataset(torch.utils.data.Dataset):
         fname, data_slice, metadata = self.raw_samples[i]
         kspace = []
         with h5py.File(str(fname), 'r') as hf:
-            kspace_volume = hf["kspace"]
-            
-            # Since 2025 dataset has non-temporal training data
-            kspace_volume = kspace_volume[None] if len(kspace_volume.shape) != 5 else kspace_volume
-
+            kspace_volume = hf["kspace"]  
             attrs = dict(hf.attrs)
             num_t = attrs['shape'][0]
             num_slices = attrs['shape'][1]
             ti = data_slice//num_slices
             zi = data_slice - ti*num_slices
 
-            mask = np.asarray(hf["mask"]) if "mask" in hf else None
+            mask = None # np.asarray(hf["mask"]) if "mask" in hf else None
             target = hf[self.recons_key][ti,zi] if self.recons_key in hf else None
 
             ti_idx_list = self._get_ti_adj_idx_list(ti, num_t)
 
+            # Each kspace_volume[t_idx, zi] has shape=(nc, ny, nx).
             for idx in ti_idx_list:
                 kspace.append(kspace_volume[idx, zi])
+
+            # final shape = (nc * num_adj_slices, ny, nx)
             kspace = np.concatenate(kspace, axis=0)
             
         if self.transform is None:

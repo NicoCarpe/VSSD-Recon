@@ -663,10 +663,10 @@ class CmrxRecon24MaskFunc(MaskFunc):
                 ``MaskFunc``.
         """
 
-        self.uniform_mask = FixedLowEquiSpacedMaskFunc(num_low_frequencies, [4,8,10], allow_any_combination=True, seed=seed )
-        self.kt_uniform_mask = FixedLowEquiSpacedMaskFunc(num_low_frequencies, [4,8,12,16,20,24], allow_any_combination=True, seed=seed )
-        self.kt_random_mask = FixedLowRandomMaskFunc(num_low_frequencies, [4,8,12,16,20,24], allow_any_combination=True, seed=seed )
-        self.radial_mask_bank = self._load_masks(mask_path)
+        # self.uniform_mask = FixedLowEquiSpacedMaskFunc(num_low_frequencies, [4,8,10], allow_any_combination=True, seed=seed )
+        # self.kt_uniform_mask = FixedLowEquiSpacedMaskFunc(num_low_frequencies, [4,8,12,16,20,24], allow_any_combination=True, seed=seed )
+        # self.kt_random_mask = FixedLowRandomMaskFunc(num_low_frequencies, [4,8,12,16,20,24], allow_any_combination=True, seed=seed )
+        # self.radial_mask_bank = self._load_masks(mask_path)
 
         # mask_dict is set according to cmrxrecon24 challenge settings
         # self.mask_dict = {'uniform':[4,8,10],
@@ -674,9 +674,12 @@ class CmrxRecon24MaskFunc(MaskFunc):
         #                    'kt_random':[4,8,12,16,20,24],
         #                    'kt_radial':[4,8,12,16,20,24]}
 
-        # mask_dict is set a little differnetly for cmrxrecon25 challenge
+        # cmrxrecon25 challenge uses a different set of acceleration factors
+        self.uniform_mask = FixedLowEquiSpacedMaskFunc(num_low_frequencies, [8,16,24], allow_any_combination=True, seed=seed )
+        self.kt_random_mask = FixedLowRandomMaskFunc(num_low_frequencies, [8,16,24], allow_any_combination=True, seed=seed )
+        self.radial_mask_bank = self._load_masks(mask_path)
+
         self.mask_dict = {'uniform':[8,16,24],
-                           'kt_uniform':[8,16,24],
                            'kt_random':[8,16,24],
                            'kt_radial':[8,16,24]}
 
@@ -793,7 +796,7 @@ class CmrxRecon24TestValMaskFunc(CmrxRecon24MaskFunc):
         """
 
         self.uniform_mask = FixedLowEquiSpacedMaskFunc(num_low_frequencies, [test_acc], allow_any_combination=True, seed=seed )
-        self.kt_uniform_mask = FixedLowEquiSpacedMaskFunc(num_low_frequencies, [test_acc], allow_any_combination=True, seed=seed )
+        #self.kt_uniform_mask = FixedLowEquiSpacedMaskFunc(num_low_frequencies, [test_acc], allow_any_combination=True, seed=seed )
         self.kt_random_mask = FixedLowRandomMaskFunc(num_low_frequencies, [test_acc], allow_any_combination=True, seed=seed )
         self.radial_mask_bank = self._load_masks(mask_path)
 

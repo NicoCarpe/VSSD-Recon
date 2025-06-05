@@ -1,9 +1,9 @@
 #!/bin/bash -l
 #SBATCH -J promptumamba_train
-#SBATCH --time=00-0:30:00
+#SBATCH --time=00-10:00:00
 #SBATCH --nodes=1
-#SBATCH --ntasks-per-node=2
-#SBATCH --gpus-per-node=v100l:2
+#SBATCH --ntasks-per-node=4
+#SBATCH --gpus-per-node=v100l:4
 #SBATCH --cpus-per-task=2       
 #SBATCH --mem=64GB                 
 #SBATCH --account=def-punithak
@@ -49,4 +49,4 @@ python -m pip install -r $PROJECT_ROOT/configs/env_pypi.txt
 srun python $PROJECT_ROOT/main.py fit \
     --config $PROJECT_ROOT/configs/base.yaml \
     --config $PROJECT_ROOT/configs/model/pmamba.yaml \
-    --config $PROJECT_ROOT/configs/train/promptmamba/cmr24-cardiac.yaml 
+    --config $PROJECT_ROOT/configs/train/promptmamba/cmr25-cardiac.yaml 

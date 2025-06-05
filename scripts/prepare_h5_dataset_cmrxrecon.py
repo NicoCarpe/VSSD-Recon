@@ -100,17 +100,25 @@ if __name__ == '__main__':
         ##* load kdata
         kdata = load_kdata(ff)
         
-        ##* swap phase_encoding and readout
+        # #* swap phase_encoding and readout
         # (nt, nz, nc, nx, ny) --> (nt, nz, nc, ny, nx)  
         if year == 2024:   
             kdata = kdata.swapaxes(-1,-2)
         
-        elif year == 2025:   
-            if len(kdata.shape) == 5:
-                kdata = rearrange(kdata, 'ny nx nc nz nt -> nt nz nc ny nx')
-            elif len(kdata.shape) == 4:   # as 2025 blackblood and other non temporal data in training
-                kdata = rearrange(kdata, 'ny nx nc nz -> nz nc ny nx')
+        elif year == 2025:  
+            if center == "Center007":
+                kdata = kdata.transpose(4, 3, 2, 0, 1) 
+            elif len(kdata.shape) == 5:
+                kdata = kdata.transpose(0, 1, 2, 4, 3) 
+            elif len(kdata.shape) == 4: 
+                kdata = kdata.transpose(3, 2, 0, 1)
+                # add a temporal dimension for consistency
+                kdata = kdata[None, ...]
+            # 2025 data stored in complex128 so needs to be downcast
+            kdata = kdata.astype(np.complex64)
         
+        print(f"kdata, dtype, file: {kdata.shape}, {kdata.dtype}, {save_name}", flush=True)
+
         ##* remove bad slices
         if year == 2024:
             kdata = remove_bad_slices(kdata, save_name)
@@ -133,7 +141,7 @@ if __name__ == '__main__':
         file.attrs['padding_right'] = kdata.shape[-1]
         file.attrs['encoding_size'] = (kdata.shape[-2],kdata.shape[-1],1)
         file.attrs['recon_size'] = (kdata.shape[-2],kdata.shape[-1],1)
-        file.attrs['patient_id'] = save_name
+        file.attrs['patient_id'] = fid
         if year == 2025:
             file.attrs['machine'] = machine
             file.attrs['center'] = center
