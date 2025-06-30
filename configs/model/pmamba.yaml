@@ -1,56 +1,21 @@
 # Description: default configuration for PromptMamba model, may vary for different datasets
 
-# model:
-#   class_path: pl_modules.PromptMrModule
-#   init_args:
-#     num_cascades: 12
-#     num_adj_slices: 3
-#     n_feat0: 96
-#     feature_dim: [192,384,768]
-#     prompt_dim: [96,192,384]
-#     sens_n_feat0: 48
-#     sens_feature_dim: [96,192,384]
-#     sens_prompt_dim: [48,96,192]
-#     len_prompt: [5,5,8]
-#     prompt_size: [64,32,16]
-#     n_enc_cab: [2,3,3]
-#     n_dec_cab: [2,2,3]
-#     n_skip_cab: [1,1,1]
-#     n_bottleneck_cab: 3    
-#     no_use_ca: false
-#     learnable_prompt: true
-#     adaptive_input: false
-#     n_buffer: 0
-#     n_history: 0
-#     use_sens_adj: true
-#     lr_gamma: 0.1
-#     weight_decay: 1e-2
-#     use_checkpoint: true
-
-# # add model tags to wandb
-# trainer:
-#   logger:
-#     class_path: lightning.pytorch.loggers.WandbLogger
-#     init_args:
-#       tags: [promptmamba]
-
-
 model:
   class_path: pl_modules.PromptMrModule
   init_args:
     num_cascades: 12
-    num_adj_slices: 5   # In the PromptMR paper 3 and 5 had similar results
-    n_feat0: 64   
-    feature_dim: [128,256,512]
-    prompt_dim: [32,64,128]
-    sens_n_feat0: 32
-    sens_feature_dim: [64,128,256]
-    sens_prompt_dim: [16,32,64]
-    len_prompt: [5,5,8]     # Give some additional tokens at coursest dim
+    num_adj_slices: 3
+    n_feat0: 96
+    feature_dim: [192,384,768]
+    prompt_dim: [96,192,384]
+    sens_n_feat0: 48
+    sens_feature_dim: [96,192,384]
+    sens_prompt_dim: [48,96,192]
+    len_prompt: [8,8,8]
     prompt_size: [64,32,16]
     n_enc_cab: [2,3,3]
     n_dec_cab: [2,2,3]
-    n_skip_cab: [1,1,1]
+    n_skip_cab: [0,0,0]
     n_bottleneck_cab: 3    
     no_use_ca: false
     learnable_prompt: true
@@ -60,7 +25,42 @@ model:
     use_sens_adj: true
     lr_gamma: 0.1
     weight_decay: 1e-2
-    use_checkpoint: false
+    use_checkpoint: true
+
+# add model tags to wandb
+trainer:
+  logger:
+    class_path: lightning.pytorch.loggers.WandbLogger
+    init_args:
+      tags: [promptmamba]
+
+
+# model:
+#   class_path: pl_modules.PromptMrModule
+#   init_args:
+#     num_cascades: 12
+#     num_adj_slices: 5   # In the PromptMR paper 3 and 5 had similar results
+#     n_feat0: 64   
+#     feature_dim: [128,256,512]
+#     prompt_dim: [32,64,128]
+#     sens_n_feat0: 32
+#     sens_feature_dim: [64,128,256]
+#     sens_prompt_dim: [16,32,64]
+#     len_prompt: [8,8,8]     
+#     prompt_size: [64,32,16]
+#     n_enc_cab: [2,3,3]
+#     n_dec_cab: [2,2,3]
+#     n_skip_cab: [0,0,0]
+#     n_bottleneck_cab: 3    
+#     no_use_ca: false
+#     learnable_prompt: true
+#     adaptive_input: false
+#     n_buffer: 0
+#     n_history: 0
+#     use_sens_adj: true
+#     lr_gamma: 0.1
+#     weight_decay: 1e-2
+#     use_checkpoint: false
 
 # # add model tags to wandb
 # trainer:

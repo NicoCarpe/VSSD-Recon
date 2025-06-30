@@ -396,6 +396,7 @@ class CmrxReconSliceDataset(torch.utils.data.Dataset):
             num_slices = attrs['shape'][1]
             ti = data_slice//num_slices
             zi = data_slice - ti*num_slices
+            attrs["ti"] = ti
 
             mask = None # np.asarray(hf["mask"]) if "mask" in hf else None
             target = hf[self.recons_key][ti,zi] if self.recons_key in hf else None

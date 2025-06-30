@@ -4,8 +4,8 @@ data:
     slice_dataset: data.CmrxReconSliceDataset
     data_path: /home/nicocarp/scratch/PromptUMamba/mridatasets/cmrxrecon2025
     challenge: multicoil
-    sample_rate: 0.5
-    val_sample_rate: 0.5
+    sample_rate: 0.2
+    val_sample_rate: 0.2
     # data_balancer:
     #   class_path: data.BalanceSampler
     #   init_args: 

@@ -4,6 +4,7 @@ This script is used to prepare h5 training dataset from  original matlab dataset
 import glob
 import os
 from os.path import join
+import csv
 import json
 import argparse
 from einops import rearrange
@@ -145,6 +146,38 @@ if __name__ == '__main__':
         if year == 2025:
             file.attrs['machine'] = machine
             file.attrs['center'] = center
+            
+            base, _ = os.path.splitext(ff)  
+            csv_path = f"{base}_info.csv"
+
+            if os.path.isfile(csv_path):
+                try:
+                    with open(csv_path, newline="") as csvfile:
+                        # assume first row is header; fieldnames might be e.g. ["Parameter", "Value"]
+                        reader = csv.DictReader(csvfile)
+                        # if the CSV has only positional columns, DictReader.fieldnames 
+                        # will be something like ['Parameter','Value'], else use positional fallback:
+                        for row in reader:
+                            # dict‐lookup with fallback to list‐index in case headers differ
+                            key     = (row.get("Parameter") or row.get(reader.fieldnames[0], "")).strip()
+                            val_str = (row.get("Value")     or row.get(reader.fieldnames[1], "")).strip()
+
+                            if not key or not val_str:
+                                continue
+
+                            # convert numeric values when possible
+                            try:
+                                val = float(val_str)
+                            except ValueError:
+                                val = val_str
+
+                            file.attrs[key] = val
+
+                except Exception as e:
+                    print(f"  Warning: couldn’t read CSV {csv_path}: {e}", flush=True)
+            else:
+                print(f"  Warning: {csv_path} not found; skipping CSV metadata.", flush=True)
+
         file.close()
 
     print('## step 2: split h5 dataset to train and val using symbolic links')

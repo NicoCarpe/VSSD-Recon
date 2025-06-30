@@ -56,9 +56,9 @@ def apply_mask(
     shape = (1,) * len(data.shape[:-3]) + tuple(data.shape[-3:])
     if isinstance(mask_func, CmrxRecon24MaskFunc):
         if num_t is not None:
-            mask, num_low_frequencies, mask_type = mask_func(shape, offset, seed, slice_idx,num_t,num_slc)
+            mask, num_low_frequencies, mask_type, acc = mask_func(shape, offset, seed, slice_idx,num_t,num_slc)
         else:
-            mask, num_low_frequencies, mask_type = mask_func(shape, offset, seed)
+            mask, num_low_frequencies, mask_type, acc = mask_func(shape, offset, seed)
     else:
         if isinstance(mask_func, PoissonDiscMaskFunc):
             mask_type = 'poisson_disc'
@@ -74,7 +74,7 @@ def apply_mask(
     
     masked_data = data * mask + 0.0  # the + 0.0 removes the sign of the zeros
 
-    return masked_data, mask, num_low_frequencies, mask_type
+    return masked_data, mask, num_low_frequencies, mask_type, acc
 
 
 def mask_center(x: torch.Tensor, mask_from: int, mask_to: int) -> torch.Tensor:
@@ -264,6 +264,7 @@ class PromptMRSample(NamedTuple):
         mask_type: The type of mask used.
         num_t: number of temporal frames in the original volume. Only used for CmrxRecon data.
         num_slc: number of slices in the original volume. Only used for CmrxRecon data.
+        attrs: dictionary of image attributes. Used by CmrxRecon2025 dataset
     """
 
     masked_kspace: torch.Tensor
@@ -277,6 +278,7 @@ class PromptMRSample(NamedTuple):
     mask_type: str
     num_t: int
     num_slc: int
+    attrs: Dict
     
 class CmrxReconDataTransform:
     """
@@ -349,7 +351,7 @@ class CmrxReconDataTransform:
 
 
         if self.mask_func is not None:
-            masked_kspace, mask_torch, num_low_frequencies,mask_type = apply_mask(
+            masked_kspace, mask_torch, num_low_frequencies, mask_type, acc = apply_mask(
                 kspace_torch, self.mask_func, seed=seed, padding=(acq_start, acq_end), slice_idx=slice_num, num_t=num_t,num_slc=num_slc
             )
         else:
@@ -362,7 +364,12 @@ class CmrxReconDataTransform:
             else:
                 mask_type = 'cartesian'
             num_low_frequencies = self.num_low_frequencies
-            
+        
+        # add additional information to attrs        
+        attrs["SliceIndex"] = slice_num
+        attrs["MaskType"] = mask_type
+        attrs["Acceleration"] = acc
+
         sample = PromptMRSample(
             masked_kspace=masked_kspace,
             mask=mask_torch.to(torch.bool),
@@ -374,8 +381,8 @@ class CmrxReconDataTransform:
             crop_size=crop_size,
             mask_type=mask_type,
             num_t=num_t,
-            num_slc=num_slc
-            # attrs=attrs,
+            num_slc=num_slc,
+            attrs=attrs,
         )
 
         return sample

@@ -2,7 +2,8 @@
 This file contains one implementation of the PromptMR+ model
 """
 import math
-from typing import List, Optional, Tuple, Union
+from typing import List, Optional, Tuple, Union, Any
+import json
 import torch
 from torch import nn
 import torch.nn.functional as F
@@ -89,7 +90,7 @@ class PromptUnet(nn.Module):
         # OutConv
         self.final_proj = FinalProjection(n_feat0, out_chans)
 
-    def forward(self, x: torch.Tensor, history_feat: Optional[List[torch.Tensor]] = None):
+    def forward(self, x: torch.Tensor, meta_emb: torch.Tensor, history_feat: Optional[List[torch.Tensor]] = None):
         """
         Forward pass of PromptUnet.
 
@@ -124,17 +125,17 @@ class PromptUnet(nn.Module):
 
         # 3. decoder
         current_feat.append(x.clone())
-        dec_prompt3 = self.prompt_level3(x)  # (B, prompt_dim[2], H'/8, W'/8)
+        dec_prompt3 = self.prompt_level3(x, meta_emb)  # (B, prompt_dim[2], H'/8, W'/8)
         x = self.dec_level3(x, dec_prompt3, self.skip_attn3(enc3), history_feat3)
         # x out: (B, D2, H'/4, W'/4)
 
         current_feat.append(x.clone())
-        dec_prompt2 = self.prompt_level2(x)  # (B, prompt_dim[1], H'/4, W'/4)
+        dec_prompt2 = self.prompt_level2(x, meta_emb)  # (B, prompt_dim[1], H'/4, W'/4)
         x = self.dec_level2(x, dec_prompt2, self.skip_attn2(enc2), history_feat2)
         # x out: (B, D1, H'/2, W'/2)
 
         current_feat.append(x.clone())
-        dec_prompt1 = self.prompt_level1(x)  # (B, prompt_dim[0], H'/2, W'/2)
+        dec_prompt1 = self.prompt_level1(x, meta_emb)  # (B, prompt_dim[0], H'/2, W'/2)
         x = self.dec_level1(x, dec_prompt1, self.skip_attn1(enc1), history_feat1)
         # x out: (B, n_feat0, H', W')
 
@@ -241,6 +242,7 @@ class NormPromptUnet(nn.Module):
         return x[..., h_pad[0]: h_mult - h_pad[1], w_pad[0]: w_mult - w_pad[1]]
 
     def forward(self, x: torch.Tensor,
+                meta_emb: torch.Tensor, 
                 history_feat: Optional[Tuple[torch.Tensor, torch.Tensor, torch.Tensor]] = None,
                 buffer: torch.Tensor = None):
         """
@@ -270,7 +272,7 @@ class NormPromptUnet(nn.Module):
         # normalize, pad, unet, unpad, unnorm back
         x, mean, std = self.norm(x)
         x, pad_sizes = self.pad(x)
-        x, history_feat = self.unet(x, history_feat)
+        x, history_feat = self.unet(x, meta_emb, history_feat)
         x = self.unpad(x, *pad_sizes)
         x = self.unnorm(x, mean, std)
         x = self.chan_complex_to_last_dim(x)
@@ -300,6 +302,7 @@ class PromptMRBlock(nn.Module):
         ref_kspace: torch.Tensor,
         mask: torch.Tensor,
         sens_maps: torch.Tensor,
+        meta_emb: torch.Tensor,
         history_feat: Optional[Tuple[torch.Tensor, ...]] = None,
         buffer: Optional[torch.Tensor] = None,
     ):
@@ -324,7 +327,7 @@ class PromptMRBlock(nn.Module):
         soft_dc = torch.where(mask, current_kspace - ref_kspace, zero) * self.dc_weight
         pred, latent, history_feat = self.model(
             sens_reduce(current_kspace, sens_maps, self.num_adj_slices),
-            history_feat, buffer)
+            meta_emb, history_feat, buffer)
         model_term = sens_expand(pred, sens_maps, self.num_adj_slices)
         updated = current_kspace - soft_dc - model_term
         return updated, latent, history_feat
@@ -361,6 +364,8 @@ class PromptMR(nn.Module):
         n_buffer: int = 4,
         n_history: int = 0,
         use_sens_adj: bool = True,
+        meta_dim: int = 32,
+        meta_stats_path: str = "/home/nicocarp/scratch/PromptUMamba/configs/meta_stats.json"
     ):
 
         super().__init__()
@@ -409,11 +414,95 @@ class PromptMR(nn.Module):
             ) for _ in range(num_cascades)
         ])
 
+        self.attr_keys = [
+            "FieldStrength(T)",
+            "FOVx(mm)",
+            "FOVy(mm)",
+            "ReconMatrix_X",
+            "ReconMatrix_Y",
+            "SliceNum",
+            "SliceThickness(mm)",
+            "CoilNumber",
+            "TemporalPhase",
+            "ReadOutOversample",
+            "TR(ms)",
+            "TE(ms)",
+            "TI(ms)",
+            "FlipAngle(degree)",
+            "SliceIndex",
+            "Acceleration",
+        ]
+
+        # accept variants
+        self._aliases = {
+            "TR(ms)":            ["TR(ms)", "TR"],
+            "TE(ms)":            ["TE(ms)", "TE"],
+            "TI(ms)":            ["TI(ms)", "TI"],
+            "FlipAngle(degree)": ["FlipAngle(degree)", "FlipAngle"],
+        }
+
+        # 3) load your JSON stats
+        with open(meta_stats_path, "r") as f:
+            self.meta_stats = json.load(f)
+
+        # build encoder on len(attr_keys)+1 (for mask-flag)
+        self.meta_encoder = nn.Sequential(
+            nn.Linear(len(self.attr_keys) + 1, meta_dim),
+            nn.ReLU(),
+            nn.Linear(meta_dim, meta_dim),
+        )
+
+
+    def _build_meta_emb(self, attrs, mask_type, B, device):
+        meta_list = []
+        for key in self.attr_keys:
+            if key == "SliceIndex":
+                idx = attrs.get("SliceIndex")
+                num = attrs.get("SliceNum")
+                v = idx.float() / num.float() if idx is not None and num is not None \
+                    else torch.zeros(B, device=device)
+
+            elif key == "Acceleration":
+                acc = attrs.get("Acceleration")
+                v = acc.float() / 24.0 if acc is not None else torch.zeros(B, device=device)
+
+            else:
+                # alias‐lookup if you have variants (e.g. "TR", "TR(ms)")
+                variants = self._aliases.get(key, [key])
+                raw = None
+                for name in variants:
+                    raw = attrs.get(name)
+                    if raw is not None:
+                        break
+
+                stats = self.meta_stats[key]
+                mean, std = stats["mean"], stats["std"]
+
+                if raw is None:
+                    # missing → pretend the value was the mean
+                    v_raw = torch.full((B,), mean, device=device, dtype=torch.float32)
+                else:
+                    v_raw = raw.float()
+
+                # normalize (mean→0), and wipe out any NaNs
+                v = (v_raw - mean) / std
+                v = torch.where(torch.isnan(v), torch.zeros_like(v), v)
+
+            meta_list.append(v)
+
+        # finally add mask_type flag
+        flag = 0.0 if mask_type[0] == "cartesian" else 1.0
+        meta_list.append(torch.full((B,), flag, device=device, dtype=torch.float32))
+
+        meta_tensor = torch.stack(meta_list, dim=1)     # (B, num_attrs+1)
+        return self.meta_encoder(meta_tensor)           # (B, meta_dim)
+
     def forward(
         self,
         masked_kspace: torch.Tensor,
         mask: torch.Tensor,
         num_low_frequencies: torch.Tensor,
+        attrs: dict[str, Any],
         mask_type: Tuple[str] = ("cartesian",),
         use_checkpoint: bool = True,
         compute_sens_per_coil: bool = False,
@@ -435,12 +524,31 @@ class PromptMR(nn.Module):
              - 'img_zf': (B, 1, H, W) zero-filled image
              - 'sens_maps': (B, H, W) complex sensitivity map
         """
-        if use_checkpoint:  # and self.training:
+
+        B = masked_kspace.shape[0]
+        device = masked_kspace.device
+
+        # build & normalize meta_emb in one shot
+        meta_emb = self._build_meta_emb(attrs, mask_type, B, device)
+
+        if use_checkpoint:
             sens_maps = torch.utils.checkpoint.checkpoint(
-                 self.sens_net, masked_kspace, mask, num_low_frequencies, mask_type, compute_sens_per_coil,
+                self.sens_net,
+                masked_kspace,
+                mask,
+                meta_emb,
+                num_low_frequencies,
+                mask_type,
+                compute_per_coil=compute_sens_per_coil,
                 use_reentrant=False)
         else:
-            sens_maps = self.sens_net(masked_kspace, mask, num_low_frequencies, mask_type, compute_sens_per_coil)
+            sens_maps = self.sens_net(
+                masked_kspace,
+                mask,
+                meta_emb,
+                num_low_frequencies,
+                mask_type,
+                compute_per_coil=compute_sens_per_coil)
 
         kspace_pred = masked_kspace.clone() # torch.Size([1, 60, 218, 170, 2])
         zero = torch.zeros(1, 1, 1, 1, 1).to(kspace_pred)
@@ -452,9 +560,26 @@ class PromptMR(nn.Module):
             is_last = ith == self.num_cascades - 1
             if use_checkpoint and self.training:
                 kspace_pred, latent, history_feat  = torch.utils.checkpoint.checkpoint(
-                    cascade, kspace_pred, masked_kspace, mask, sens_maps, history_feat, buffer, use_reentrant=False)
+                    cascade, 
+                    kspace_pred, 
+                    masked_kspace, 
+                    mask, 
+                    sens_maps, 
+                    meta_emb, 
+                    history_feat, 
+                    buffer, 
+                    use_reentrant=False
+                )
             else:
-                kspace_pred, latent, history_feat = cascade(kspace_pred, masked_kspace, mask, sens_maps, history_feat,buffer)
+                kspace_pred, latent, history_feat = cascade(
+                    kspace_pred, 
+                    masked_kspace, 
+                    mask, 
+                    sens_maps, 
+                    meta_emb, 
+                    history_feat, 
+                    buffer
+                )
 
             if self.n_buffer>0 and not is_last:
                 ffx =  sens_reduce( torch.where(mask, kspace_pred, zero), sens_maps, self.num_adj_slices)
@@ -547,21 +672,31 @@ class SensitivityModel(nn.Module):
         return x.view(b, adj_coil, h, w, two)
 
 
-    def compute_sens(self, model:nn.Module, images: torch.Tensor, compute_per_coil: bool) -> torch.Tensor:
+    def compute_sens(self, model:nn.Module, images: torch.Tensor, compute_per_coil: bool, meta_emb: torch.Tensor) -> torch.Tensor:
         bc = images.shape[0] # batch_size * n_coils
+        B, meta_dim = meta_emb.shape  # batch_size, meta_dim
+        coil = bc // B  # n_coils
+
+        # 1) expand meta_emb to match the "flattened" batch:
+        #    (B, meta_dim) -> (B, coil, meta_dim) -> (B*coil, meta_dim)
+        meta_exp = meta_emb.unsqueeze(1)           # (B, 1, meta_dim)
+        meta_exp = meta_exp.repeat(1, coil, 1)     # (B, coil, meta_dim)
+        meta_exp = meta_exp.view(bc, meta_dim)     # (B*coil, meta_dim)
+
         if compute_per_coil:
             output = []
             for i in range(bc):
-                output.append(model(images[i].unsqueeze(0))[0])
+                output.append(model(images[i].unsqueeze(0), meta_emb=meta_exp[i].unsqueeze(0))[0])
             output = torch.cat(output, dim=0)
         else:
-            output = model(images)[0]
+            output = model(images, meta_emb=meta_exp)[0]
         return output
         
     def forward(
         self,
         masked_kspace: torch.Tensor,
         mask: torch.Tensor,
+        meta_emb: torch.Tensor,
         num_low_frequencies: Optional[Union[int, torch.Tensor]] = None,
         mask_type: Tuple[str] = ("cartesian",),
         compute_per_coil: bool = False,
@@ -585,7 +720,7 @@ class SensitivityModel(nn.Module):
         images, batches = self.chans_to_batch_dim(ifft2c(masked_kspace_acs))
 
         return self.divide_root_sum_of_squares(
-            self.batch_chans_to_chan_dim(self.compute_sens(self.norm_unet, images, compute_per_coil), batches)
+            self.batch_chans_to_chan_dim(self.compute_sens(self.norm_unet, images, compute_per_coil, meta_emb), batches)
         )
 
 

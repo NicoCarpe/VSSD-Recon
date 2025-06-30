@@ -96,12 +96,12 @@ class MaskFunc:
             raise ValueError("Shape should have 3 or more dimensions")
 
         with temp_seed(self.rng, seed):
-            center_mask, accel_mask, num_low_frequencies = self.sample_mask(
+            center_mask, accel_mask, num_low_frequencies, acc= self.sample_mask(
                 shape, offset
             )
 
         # combine masks together
-        return torch.max(center_mask, accel_mask), num_low_frequencies
+        return torch.max(center_mask, accel_mask), num_low_frequencies, acc
 
     def sample_mask(
         self,
@@ -138,7 +138,7 @@ class MaskFunc:
             shape,
         )
 
-        return center_mask, acceleration_mask, num_low_frequencies
+        return center_mask, acceleration_mask, num_low_frequencies, acceleration
 
     def reshape_mask(self, mask: np.ndarray, shape: Sequence[int]) -> torch.Tensor:
         """Reshape mask to desired output shape."""
@@ -369,7 +369,7 @@ class FixedLowRandomMaskFunc(MaskFunc):
             ),
             shape,
         )
-        return center_mask, acceleration_mask, num_low_frequencies
+        return center_mask, acceleration_mask, num_low_frequencies, acceleration
 
     def sample_kt_mask(self, shape, offset, num_adj_slices, slice_idx, num_t,num_slc, rng):
         if not hasattr(self, 'start_adj'):
@@ -397,7 +397,7 @@ class FixedLowRandomMaskFunc(MaskFunc):
         select_list = self._get_ti_adj_idx_list(ti,num_t)
         mask = mask[select_list]
     
-        return mask, num_low_frequencies
+        return mask, num_low_frequencies, acceleration
 
     def calculate_acceleration_mask(
         self,
@@ -435,7 +435,7 @@ class FixedLowEquiSpacedMaskFunc(MaskFunc):
             ),
             shape,
         )
-        return center_mask, acceleration_mask, num_low_frequencies
+        return center_mask, acceleration_mask, num_low_frequencies, acceleration
 
     def sample_uniform_mask(self, shape, offset, rng):
 
@@ -453,7 +453,7 @@ class FixedLowEquiSpacedMaskFunc(MaskFunc):
             shape,
         )
         mask = torch.max(center_mask, acceleration_mask)
-        return mask, num_low_frequencies
+        return mask, num_low_frequencies, acceleration
 
     def sample_kt_mask(self, shape, offset, num_adj_slices, slice_idx, num_t,num_slc, rng, seed):
         ##* important: need to use the rng from cmrxrecon24maskfunc; so validation is reproduceable; 
@@ -487,7 +487,7 @@ class FixedLowEquiSpacedMaskFunc(MaskFunc):
             mask.append(torch.max(center_mask, acceleration_mask))
         mask = torch.cat(mask, dim=0)
 
-        return mask, num_low_frequencies
+        return mask, num_low_frequencies, acceleration
 
     def calculate_acceleration_mask(
         self,
@@ -595,11 +595,11 @@ class PoissonDiscMaskFunc(MaskFunc):
             raise ValueError("Shape should have 3 or more dimensions")
 
         with temp_seed(self.rng, seed):
-            mask, radius_low_frequencies = self.sample_mask(
+            mask, radius_low_frequencies, acc = self.sample_mask(
                 shape, offset
             )
 
-        return mask, radius_low_frequencies
+        return mask, radius_low_frequencies, acceleration
 
     def sample_mask(self,shape,offset=None):
 
@@ -611,7 +611,7 @@ class PoissonDiscMaskFunc(MaskFunc):
         # Randomly pick one example
         choice = self.rng.randint(0, num_masks)
 
-        return torch.from_numpy(mask[choice][np.newaxis, ..., np.newaxis]), center_radius
+        return torch.from_numpy(mask[choice][np.newaxis, ..., np.newaxis]), center_radius, acceleration
     
     def circular_centered_mask(self,shape, radius):
         center = np.asarray(shape) // 2
@@ -724,18 +724,18 @@ class CmrxRecon24MaskFunc(MaskFunc):
         self.seed = seed
         with temp_seed(self.rng, seed):
             mask_type = self.choose_mask()
-            mask, num_low_frequencies = self.sample_mask(mask_type, shape, offset, slice_idx, num_t, num_slc)
+            mask, num_low_frequencies, acc = self.sample_mask(mask_type, shape, offset, slice_idx, num_t, num_slc)
 
-        return mask, num_low_frequencies, mask_type
+        return mask, num_low_frequencies, mask_type, acc
 
     def sample_mask(self,mask_type, shape,offset=None,  slice_idx=None,num_t=None,num_slc=None):
         
         if mask_type=='uniform':
-            mask, num_low_frequencies = self.uniform_mask.sample_uniform_mask(shape, offset, self.rng) #, self.seed)
+            mask, num_low_frequencies, acc = self.uniform_mask.sample_uniform_mask(shape, offset, self.rng) #, self.seed)
         elif mask_type=='kt_uniform':
-            mask, num_low_frequencies = self.kt_uniform_mask.sample_kt_mask(shape, offset, self.num_adj_slices, slice_idx, num_t,num_slc, self.rng, self.seed)
+            mask, num_low_frequencies, acc = self.kt_uniform_mask.sample_kt_mask(shape, offset, self.num_adj_slices, slice_idx, num_t,num_slc, self.rng, self.seed)
         elif mask_type=='kt_random':
-            mask, num_low_frequencies = self.kt_random_mask.sample_kt_mask(shape, offset, self.num_adj_slices, slice_idx, num_t,num_slc, self.rng)
+            mask, num_low_frequencies, acc = self.kt_random_mask.sample_kt_mask(shape, offset, self.num_adj_slices, slice_idx, num_t,num_slc, self.rng)
         elif mask_type=='kt_radial':
             ##TODO: codes below need to be wrapped in a MaskFunc as other mask types
             h,w = shape[-3:-1] # (h,w)
@@ -756,7 +756,7 @@ class CmrxRecon24MaskFunc(MaskFunc):
         else:
             raise ValueError(f"{mask_type} not supported")
 
-        return mask.float(), num_low_frequencies
+        return mask.float(), num_low_frequencies, acc
 
     def _load_masks(self,mask_path):
         ''' load cmrxrecon24 pseudo-radial masks from h5 file'''

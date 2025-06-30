@@ -165,11 +165,11 @@ class PromptMrModule(MriModule):
         )
         return [optim], [scheduler]
     
-    def forward(self, masked_kspace, mask, num_low_frequencies, mask_type="cartesian", use_checkpoint=False, compute_sens_per_coil=False):
-        return self.promptmr(masked_kspace, mask, num_low_frequencies, mask_type, use_checkpoint=use_checkpoint, compute_sens_per_coil=compute_sens_per_coil)   
+    def forward(self, masked_kspace, mask, num_low_frequencies, attrs, mask_type="cartesian", use_checkpoint=False, compute_sens_per_coil=False):
+        return self.promptmr(masked_kspace, mask, num_low_frequencies, attrs, mask_type, use_checkpoint=use_checkpoint, compute_sens_per_coil=compute_sens_per_coil)   
 
     def training_step(self, batch, batch_idx):
-        output_dict = self(batch.masked_kspace, batch.mask, batch.num_low_frequencies, batch.mask_type,
+        output_dict = self(batch.masked_kspace, batch.mask, batch.num_low_frequencies, batch.attrs, batch.mask_type, 
                            use_checkpoint=self.use_checkpoint, compute_sens_per_coil=self.compute_sens_per_coil)
         output = output_dict['img_pred']
         target, output = transforms.center_crop_to_smallest(
@@ -188,7 +188,7 @@ class PromptMrModule(MriModule):
 
     def validation_step(self, batch, batch_idx):
 
-        output_dict = self(batch.masked_kspace, batch.mask, batch.num_low_frequencies, batch.mask_type,
+        output_dict = self(batch.masked_kspace, batch.mask, batch.num_low_frequencies, batch.attrs, batch.mask_type,
                            compute_sens_per_coil=self.compute_sens_per_coil)
         output = output_dict['img_pred']
         img_zf = output_dict['img_zf']
@@ -215,7 +215,7 @@ class PromptMrModule(MriModule):
         }
 
     def predict_step(self, batch, batch_idx, dataloader_idx=0):
-        output_dict = self(batch.masked_kspace, batch.mask, batch.num_low_frequencies, batch.mask_type,
+        output_dict = self(batch.masked_kspace, batch.mask, batch.num_low_frequencies, batch.attrs, batch.mask_type,
                            compute_sens_per_coil=self.compute_sens_per_coil)
         output = output_dict['img_pred']
 

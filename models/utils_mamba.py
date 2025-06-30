@@ -6,6 +6,7 @@ from typing import Optional, Tuple
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torch.nn import MultiheadAttention
 from einops import rearrange
 
 from data import transforms
@@ -21,26 +22,104 @@ except:
 # ---------- Prompt Block -----------------------
 
 class PromptBlock(nn.Module):
-    def __init__(self, prompt_dim=128, prompt_len=5, prompt_size=96, lin_dim=192, learnable_prompt=False):
+    """
+    FiLM-conditioned cross-attention prompt block.
+    Replaces the original PromptBlock with:
+      1) FiLM-modulated prompt prototypes
+      2) Cross-attention between feature queries and prompt keys/values
+    Returns a prompt map of shape (B, prompt_dim, H, W).
+    """
+    def __init__(
+        self,
+        prompt_dim:   int,   # D_p
+        prompt_len:   int,   # L
+        prompt_size:  int,   # unused, kept for API compatibility
+        lin_dim:      int,   # C_feat
+        learnable_prompt: bool = False,
+        meta_dim:     int = 32,
+        num_heads:    int = 4,
+    ):
         super().__init__()
-        self.prompt_param = nn.Parameter(torch.rand(1, prompt_len, prompt_dim, prompt_size, prompt_size), 
-                                         requires_grad=learnable_prompt)
-        self.linear_layer = nn.Linear(lin_dim, prompt_len)
-        self.dec_conv3x3 = nn.Conv2d(prompt_dim, prompt_dim, kernel_size=3, stride=1, padding=1, bias=False)
+        # Prototype prompts: (L, D_p)
+        self.prompt = nn.Parameter(
+            torch.randn(prompt_len, prompt_dim),
+            requires_grad=learnable_prompt
+        )
 
-    def forward(self, x):
+        # FiLM generators: produce (B, L*D_p) → view as (B, L, D_p)
+        self.to_gamma = nn.Linear(meta_dim, prompt_len * prompt_dim)
+        self.to_beta  = nn.Linear(meta_dim, prompt_len * prompt_dim)
 
+        # Attention projections: queries from features, keys/values from prompts
+        self.to_q = nn.Linear(lin_dim, lin_dim, bias=False)
+        self.to_k = nn.Linear(prompt_dim, lin_dim, bias=False)
+        self.to_v = nn.Linear(prompt_dim, lin_dim, bias=False)
+
+        # Cross-attention 
+        self.attn = nn.MultiheadAttention(
+            embed_dim=lin_dim,
+            num_heads=4,           # fixed
+            batch_first=True
+        )
+
+        # Output projections: from C_feat (lin_dim) → prompt_dim
+        self.to_out = nn.Linear(lin_dim, prompt_dim, bias=False)
+
+    def forward(self, x: torch.Tensor, meta_emb: torch.Tensor) -> torch.Tensor:
+        """
+        x:         (B, C_feat,  H, W)
+        meta_emb:  (B, meta_dim)
+        returns:   (B, C_feat,  H, W)
+        """
         B, C, H, W = x.shape
-        emb = x.mean(dim=(-2, -1))
-        prompt_weights = F.softmax(self.linear_layer(emb), dim=1)
-        prompt_param = self.prompt_param.unsqueeze(0).repeat(B, 1, 1, 1, 1, 1).squeeze(1)
-        prompt = prompt_weights.unsqueeze(-1).unsqueeze(-1).unsqueeze(-1) * prompt_param
-        prompt = torch.sum(prompt, dim=1)
+        L, Dp = self.prompt.shape
 
-        prompt = F.interpolate(prompt, (H, W), mode="bilinear")
-        prompt = self.dec_conv3x3(prompt)
+        # — a) FiLM-modulate prototypes → (B, L, D_p)
+        gamma = self.to_gamma(meta_emb).view(B, L, Dp)
+        beta  = self.to_beta(meta_emb).view(B, L, Dp)
+        prompts = gamma * self.prompt.unsqueeze(0) + beta
 
+        # — b) flatten features → (B, N=H*W, C_feat)
+        feats = x.flatten(2).permute(0, 2, 1)
+
+        # — c) project to Q, K, V
+        Q = self.to_q(feats)       # (B, N, C_feat)
+        K = self.to_k(prompts)     # (B, L, C_feat)
+        V = self.to_v(prompts)     # (B, L, C_feat)
+
+        # — d) cross-attention
+        attn_out, _ = self.attn(Q, K, V)  # (B, N, C_feat)
+
+        # — e) project down to prompt_dim and reshape
+        prompt = self.to_out(attn_out)               # (B, N, prompt_dim)
+        prompt = prompt.permute(0, 2, 1).view(B, Dp, H, W)
         return prompt
+
+
+# class PromptBlock(nn.Module):
+#     def __init__(self, prompt_dim=128, prompt_len=5, prompt_size=96, lin_dim=192, learnable_prompt=False, meta_dim=32):
+#         super().__init__()
+#         self.prompt_param = nn.Parameter(torch.rand(1, prompt_len, prompt_dim, prompt_size, prompt_size), 
+#                                          requires_grad=learnable_prompt)
+#         # separate image‐head and meta‐head
+#         self.linear_img  = nn.Linear(lin_dim,  prompt_len)
+#         self.linear_meta = nn.Linear(meta_dim, prompt_len)
+#         self.dec_conv3x3 = nn.Conv2d(prompt_dim, prompt_dim, kernel_size=3, stride=1, padding=1, bias=False)
+
+#     def forward(self, x, meta_emb):
+#         B, C, H, W = x.shape
+#         emb = x.mean(dim=(-2, -1))
+
+#         prompt_weights = F.softmax(self.linear_img(emb) + self.linear_meta(meta_emb), dim=1)
+
+#         prompt_param = self.prompt_param.unsqueeze(0).repeat(B, 1, 1, 1, 1, 1).squeeze(1)
+#         prompt = prompt_weights.unsqueeze(-1).unsqueeze(-1).unsqueeze(-1) * prompt_param
+#         prompt = torch.sum(prompt, dim=1)
+
+#         prompt = F.interpolate(prompt, (H, W), mode="bilinear")
+#         prompt = self.dec_conv3x3(prompt)
+
+#         return prompt
 
 
 ##########################################################################
