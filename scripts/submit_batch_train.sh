@@ -1,11 +1,11 @@
 #!/bin/bash -l
 #SBATCH -J promptumamba_train
-#SBATCH --time=00-22:00:00
+#SBATCH --time=03-00:00:00
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=4
 #SBATCH --gpus-per-node=v100l:4
 #SBATCH --cpus-per-task=3       
-#SBATCH --mem=128GB                 
+#SBATCH --mem=124GB                 
 #SBATCH --account=def-punithak
 #SBATCH --mail-type=BEGIN,END,FAIL
 #SBATCH --mail-user=ngcarpen@ualberta.ca

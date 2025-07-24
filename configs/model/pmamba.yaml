@@ -11,7 +11,7 @@ model:
     sens_n_feat0: 48
     sens_feature_dim: [96,192,384]
     sens_prompt_dim: [48,96,192]
-    len_prompt: [8,8,8]
+    len_prompt: [5,5,5]
     prompt_size: [64,32,16]
     n_enc_cab: [2,3,3]
     n_dec_cab: [2,2,3]
@@ -39,14 +39,14 @@ trainer:
 #   class_path: pl_modules.PromptMrModule
 #   init_args:
 #     num_cascades: 12
-#     num_adj_slices: 5   # In the PromptMR paper 3 and 5 had similar results
+#     num_adj_slices: 3   # In the PromptMR paper 3 and 5 had similar results
 #     n_feat0: 64   
 #     feature_dim: [128,256,512]
 #     prompt_dim: [32,64,128]
 #     sens_n_feat0: 32
 #     sens_feature_dim: [64,128,256]
 #     sens_prompt_dim: [16,32,64]
-#     len_prompt: [8,8,8]     
+#     len_prompt: [5,5,5]     
 #     prompt_size: [64,32,16]
 #     n_enc_cab: [2,3,3]
 #     n_dec_cab: [2,2,3]

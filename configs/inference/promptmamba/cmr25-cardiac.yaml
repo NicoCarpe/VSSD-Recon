@@ -1,0 +1,41 @@
+data:
+  class_path: pl_modules.InferenceDataModule
+  init_args:
+    slice_dataset: data.CmrxReconInferenceSliceDataset
+    data_path: /home/nicocarp/scratch/PromptUMamba/raw_datasets/MICCAIChallenge2025/ChallengeDataValSet/TaskR2
+    challenge: multicoil
+    test_transform:
+      class_path: data.CmrxReconDataTransform
+      init_args:
+        mask_func: null
+        uniform_resolution: null
+        use_seed: True
+        mask_type: 'cartesian_or_radial'
+        test_num_low_frequencies: 20
+        already_undersampled: True
+    num_adj_slices: 3
+    batch_size: 1
+    distributed_sampler: true 
+    test_filter: 
+      class_path: data.FuncFilterString
+      init_args:
+        filter_str: null #Mapping/ValidationSet/UnderSample_Task1/P001/
+
+# dataset specific settings
+seed_everything: 42
+trainer:
+  accelerator: gpu
+  strategy: ddp
+  devices: 1
+  num_nodes: 1
+  logger: False
+  callbacks:
+    -
+      class_path: __main__.CustomWriter
+      init_args:
+        output_dir: /home/nicocarp/scratch/PromptUMamba/predict/cmr25-cardiac/test_promptmamba_R2
+        write_interval: batch_and_epoch
+model:
+  class_path: pl_modules.PromptMrModule
+
+ckpt_path: /home/nicocarp/scratch/PromptUMamba/scripts/exp/cmr25-cardiac/promptmamba/deep_recon/8bbk6x8z/checkpoints/last.ckpt

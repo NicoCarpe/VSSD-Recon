@@ -1,0 +1,161 @@
+Summary of data formats, rules, notes, and demo codes in Task R1:
+
+===========================
+0. Directory of ChallengeData_ValSet
+
+ChallengeData_ValSet
+- TaskR1
+-- MultiCoil
+--- Cine
+---- ValidationSet
+----- Mask_TaskR1
+------ Center001
+------- UIH_30T_umr780
+-------- P007
+--------- cine_lax_3ch_mask_Uniform8.mat
+--------- cine_lax_4ch_mask_ktRadial16.mat
+--------- cine_sax_mask_ktGaussian24.mat
+-------- P012
+--------- cine_lax_3ch_mask_ktRadial16.mat
+--------- cine_lax_4ch_mask_ktRadial16.mat
+--------- cine_sax_mask_ktGaussian24.mat
+------  Center002
+------- Siemens_30T_CIMA.X
+-------- P004
+--------- cine_lax_mask_Uniform24.mat
+-------- P006
+--------- cine_lax_mask_ktGaussian24.mat
+------- UIH_30T_umr880
+-------- P004
+--------- cine_lax_2ch_mask_ktRadial8.mat
+--------- cine_lax_3ch_mask_ktRadial8.mat
+--------- cine_lax_4ch_mask_Uniform16.mat
+-------- P011
+--------- cine_lax_2ch_mask_ktGaussian8.mat
+--------- cine_lax_3ch_mask_Uniform8.mat
+--------- cine_sax_mask_ktRadial24.mat
+----- UnderSample_TaskR1
+------ Center001
+------- UIH_30T_umr780
+-------- P007
+--------- cine_lax_3ch_info.csv
+--------- cine_lax_3ch_kus_Uniform8.mat
+--------- cine_lax_4ch_info.csv
+--------- cine_lax_4ch_kus_ktRadial16.mat
+--------- cine_sax_info.csv
+--------- cine_sax_kus_ktGaussian24.mat
+-------- P012
+--------- cine_lax_3ch_info.csv
+--------- cine_lax_3ch_kus_ktRadial16.mat
+--------- cine_lax_4ch_info.csv
+--------- cine_lax_4ch_kus_ktRadial16.mat
+--------- cine_sax_info.csv
+--------- cine_sax_kus_ktGaussian24.mat
+------ Center002
+------- Siemens_30T_CIMA.X
+-------- P004
+--------- cine_lax_info.csv
+--------- cine_lax_kus_Uniform24.mat
+-------- P006
+--------- cine_lax_info.csv
+--------- cine_lax_kus_ktGaussian24.mat
+------- UIH_30T_umr880
+-------- P004
+--------- cine_lax_2ch_info.csv
+--------- cine_lax_2ch_kus_ktRadial8.mat
+--------- cine_lax_3ch_info.csv
+--------- cine_lax_3ch_kus_ktRadial8.mat
+--------- cine_lax_4ch_info.csv
+--------- cine_lax_4ch_info.csv
+--------- cine_lax_4ch_kus_Uniform16.mat
+-------- P011
+--------- cine_lax_2ch_info.csv
+--------- cine_lax_2ch_kus_ktGaussian8.mat
+--------- cine_lax_3ch_info.csv
+--------- cine_lax_3ch_kus_Uniform8.mat
+--------- cine_sax_info.csv
+--------- cine_sax_kus_ktRadial24.mat
+
+--- BlackBlood
+---- ValidationSet
+----- Mask_TaskR1
+----- UnderSample_TaskR1
+
+--- Flow2d
+---- ValidationSet
+----- Mask_TaskR1
+----- UnderSample_TaskR1
+
+--- LGE
+---- ValidationSet
+----- Mask_TaskR1
+----- UnderSample_TaskR1
+
+--- Mapping
+---- ValidationSet
+----- Mask_TaskR1
+----- UnderSample_TaskR1
+
+--- Perfusion 
+---- ValidationSet
+----- Mask_TaskR1
+----- UnderSample_TaskR1
+
+--- T1rho
+---- ValidationSet
+----- Mask_TaskR1
+----- UnderSample_TaskR1
+
+--- T1w
+---- ValidationSet
+----- Mask_TaskR1
+----- UnderSample_TaskR1
+
+--- T2w
+---- ValidationSet
+----- Mask_TaskR1
+----- UnderSample_TaskR1
+===========================
+
+===========================
+1. Rules and notes
+
+1) To ensure the fairness of this challenge, you are only allowed to use  the datasets provided by fastMRI, CMRxRecon2023, and CMRxRecon2024,CMRxRecon2025. Data augmentation based on the training dataset is allowed.
+2)  ValidationSet  include Cine, BlackBlood,Flow2d, LGE,  Mapping, T1rho, T1w, T2w.
+3) The data size of Cine, Flow2d, LGE,  Mapping, T1rho is 5D (nx,ny,nc,nz,nt); the data size of BlackBlood, T1w, T2w is 4D (nx,ny,nc,nz).
+===========================
+
+===========================
+2. Multi-coil data
+
+Taking multi-coil long-axis (LAX) cine as an example, the format of data is as follows:
+
+Data in folder 'UnderSample_TaskR1': cine_lax_kus_xxx.mat 
+# cine with long-axis view (including 3CH, 2CH, and 4CH views within the nz dimension). 
+# 'xxx' is the corresponding undersampling scenarios. For example, 'Uniform4' means uniform undersampling at acceleration factor 4x (ACS not included for calculations)
+# variable name:  
+# 'kus' for undersampled kspace 
+# data type: complex kspace data with the dimensions (nx,ny,nc,nz,nt), the central 16 lines (ny) are always fully sampled to be used as autocalibration signals (ACS)
+-nx: matrix size in x-axis (kspace) 
+-ny: matrix size in y-axis (kspace) 
+-nc: coil array number (compressed to 10) 
+-nz: slice number (for SAX) or slice group (for LAX, i.e., 3CH, 2CH, and 4CH views)
+-nt: temporal/parametric frame 
+
+Data in folder 'Mask_TaskR1': cine_lax_mask_xxx.mat 
+# undersampling mask with long-axis view, the mask is fixed among different nc and nz. But the mask is interleaved along nt.
+# 'xxx' is the corresponding undersampling scenarios. For example, 'ktUniform4' means uniform undersampling with temporal interleaving at acceleration factor 4x (ACS not included for calculations)
+# variable name:  
+# "mask" for undersampling mask with temporal interleaving
+# data type: 3D binary data with the dimensions (nx,ny,nt), the central 16 lines (ny) or central 16*16 regions (nx*ny) are always fully sampled to be used as autocalibration signals (ACS)
+-nx: matrix size in x-axis (kspace) 
+-ny: matrix size in y-axis (kspace)  
+-nt: temporal/parametric frame
+===========================
+
+===========================
+3. Matlab code for generating undersampled kspace using the fully sampled kspace and 3D k-t undersampling mask in TaskR1
+
+mask_5D = reshape(mask, [nx,ny,1,1,nt]);
+kus = kspace_full .* mask_5D;
+===========================

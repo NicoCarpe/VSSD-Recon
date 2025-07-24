@@ -5,6 +5,7 @@ import logging
 import os
 import pickle
 import random
+import csv
 import xml.etree.ElementTree as etree
 from pathlib import Path
 from typing import (
@@ -23,8 +24,9 @@ import numpy as np
 import torch
 import torch.utils
 
+from data.transforms import to_tensor
 from mri_utils.utils import load_shape
-from mri_utils import load_kdata, load_mask
+from mri_utils import ifft2c, load_kdata, load_mask, rss_complex
 #########################################################################################################
 # Common functions
 #########################################################################################################
@@ -424,7 +426,7 @@ class CmrxReconInferenceSliceDataset(torch.utils.data.Dataset):
         challenge: str,
         raw_sample_filter: Optional[Callable] = None,
         transform: Optional[Callable] = None,
-        num_adj_slices: int = 5
+        num_adj_slices: int = 3
     ):
         self.root = root
         # get all the kspace mat files from root, under folder or its subfolders
@@ -438,8 +440,8 @@ class CmrxReconInferenceSliceDataset(torch.utils.data.Dataset):
             self.year = 2023
         else:
             raise ValueError('Invalid dataset root')
-        #
-        if self.year == 2023:
+        
+        if self.year == 2025:
             self.volume_paths = [str(path) for path in volume_paths if '_mask_' not in str(path)]
             
         elif self.year == 2024:
@@ -456,7 +458,7 @@ class CmrxReconInferenceSliceDataset(torch.utils.data.Dataset):
         self.transform = transform
         
         assert num_adj_slices % 2 == 1, "Number of adjacent slices must be odd."
-        assert num_adj_slices <= 11, "Number of adjacent slices must be <= 11."
+        # assert num_adj_slices <= 11, "Number of adjacent slices must be <= 11."
         self.num_adj_slices = num_adj_slices
         self.start_adj = -(num_adj_slices // 2)
         self.end_adj = num_adj_slices // 2 + 1
@@ -516,40 +518,125 @@ class CmrxReconInferenceSliceDataset(torch.utils.data.Dataset):
         replication_suffix = max(self.end_adj - end_lim, 0) * ti_idx_list[-1:]
 
         return replication_prefix + ti_idx_list + replication_suffix
-    
+
     def _load_volume(self, path):
         """
-        Load the k-space volume and mask for the given path.
-        Modify this function based on your `load_kdata` and `load_mask` functions.
+        Load the k-space volume, mask, and metadata for 2023/2024 as before,
+        plus the extra 2025 CSV fields when self.year == 2025.
         """
+        p = Path(path)
+
+        # --- LOAD & REORDER K-SPACE ---
         kspace_volume = load_kdata(path)
-        kspace_volume = kspace_volume[None] if len(kspace_volume.shape) != 5 else kspace_volume # blackblood has no time dimension
-        if self.year == 2025:
-            # (ny, nx, nc, nz, nt) --> (nt, nz, nc, ny, nx)
-            kspace_volume = kspace_volume.transpose(4, 3, 2, 0, 1)
-        else:
-            # (nt, nz, nc, nx, ny) --> (nt, nz, nc, ny, nx)
-            kspace_volume = kspace_volume.transpose(0, 1, 2, 4, 3)
+        if kspace_volume.ndim != 5:
+            # BlackBlood, T1w, T2w → add time dim
+            kspace_volume = kspace_volume[None]
         
-        if self.year==2023:
-            mask_path = path.replace('.mat', '_mask.mat')
-            mask = load_mask(mask_path).T[0:1]
-            mask=mask[None,:,:,None]
-        elif self.year==2024:
-            mask_path = path.replace('UnderSample_Task', 'Mask_Task').replace('_kus_', '_mask_')
+        # (nt, nz, nc, nx, ny) → (nt, nz, nc, ny, nx)
+        kspace_volume = kspace_volume.transpose(0, 1, 2, 4, 3)
+
+        # --- YEAR-SPECIFIC MASK LOGIC ---
+        if self.year == 2025:
+            mask_path = path.replace('UnderSample_Task', 'Mask_Task') \
+                            .replace('_kus_', '_mask_')
+            raw_mask = load_mask(mask_path)  # may be 2D (nx,ny) or 3D (nt,nx,ny)
+            if raw_mask.ndim == 3:
+                # dynamic mask: (nt, nx, ny) → (nt, ny, nx, 1)
+                mask = raw_mask.transpose(0, 2, 1)[..., None]
+            elif raw_mask.ndim == 2:
+                # static mask: (nx, ny) → (1, ny, nx, 1)
+                mask = raw_mask.T[None, ..., None]
+            else:
+                raise ValueError(f"Unexpected mask ndim={raw_mask.ndim} for {mask_path}")
+
+        elif self.year == 2024:
+            mask_path = path.replace('UnderSample_Task', 'Mask_Task') \
+                            .replace('_kus_', '_mask_')
             if 'UnderSample_Task1' in path:
                 mask = load_mask(mask_path).T[0:1]
-                mask=mask[None,:,:,None]
+                mask = mask[None, ..., None]
             else:
-                mask = load_mask(mask_path).transpose(0,2,1)
-                mask=mask[:,:,:,None]
+                mask = load_mask(mask_path).transpose(0, 2, 1)
+                mask = mask[..., None]
 
-        attrs = {
-            'encoding_size': [kspace_volume.shape[3], kspace_volume.shape[4], 1],
-            'padding_left': 0,
-            'padding_right': kspace_volume.shape[-1],
-            'recon_size': [kspace_volume.shape[3], kspace_volume.shape[4], 1],
-        }
+        elif self.year == 2023:
+            mask_path = path.replace('.mat', '_mask.mat')
+            mask = load_mask(mask_path).T[0:1]
+            mask = mask[None, ..., None]
+            
+        else:
+            raise ValueError(f"Unsupported year: {self.year}")
+
+        # --- BUILD attrs ---
+        if self.year == 2025:
+            # pull out path info
+            center  = p.parts[-4]
+            machine = p.parts[-3]
+            patient = p.parts[-2]
+            ftype   = p.stem  # e.g. "P001_kus_…"
+
+            # compute img_rss to match your H5‐prep script
+            # 2025 data stored in complex128 so needs to be downcast
+            kspace_volume = kspace_volume.astype(np.complex64)
+            k_t      = to_tensor(kspace_volume)
+            img_coil = ifft2c(k_t)
+            img_rss  = rss_complex(img_coil, dim=-3).cpu().numpy()
+
+            # base attrs
+            attrs = {
+                'max':           float(img_rss.max()),
+                'norm':          float(np.linalg.norm(img_rss)),
+                'acquisition':   ftype,
+                'shape':         kspace_volume.shape,
+                'padding_left':  0,
+                'padding_right': kspace_volume.shape[-1],
+                'encoding_size': (kspace_volume.shape[-2],
+                                  kspace_volume.shape[-1], 1),
+                'recon_size':    (kspace_volume.shape[-2],
+                                  kspace_volume.shape[-1], 1),
+                'patient_id':    patient,
+                'machine':       machine,
+                'center':        center,
+            }
+
+            # replace "kus_" suffix with "info.csv"
+            prefix    = p.name.split('kus_')[0]
+            info_path = p.with_name(f"{prefix}info.csv")
+            if info_path.is_file():
+                with open(info_path, newline='') as csvfile:
+                    reader = csv.DictReader(csvfile)
+                    for row in reader:
+                        key     = (row.get('Parameter')
+                                   or row.get(reader.fieldnames[0], '')).strip()
+                        val_str = (row.get('Value')
+                                   or row.get(reader.fieldnames[1], '')).strip()
+                        if not key or not val_str:
+                            continue
+                        try:
+                            val = float(val_str)
+                        except ValueError:
+                            val = val_str
+                        attrs[key] = val
+            else:
+                print(f"Warning: info CSV not found at {info_path}", flush=True)
+
+        else:
+            # 2023 & 2024: minimal attrs as in your original inference
+            attrs = {
+                'encoding_size': [
+                    kspace_volume.shape[3],
+                    kspace_volume.shape[4],
+                    1
+                ],
+                'padding_left':  0,
+                'padding_right': kspace_volume.shape[-1],
+                'recon_size':    [
+                    kspace_volume.shape[3],
+                    kspace_volume.shape[4],
+                    1
+                ],
+            }
+
         return kspace_volume, mask, attrs
     
     def _load_next_volume(self):

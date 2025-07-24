@@ -300,7 +300,7 @@ class InferenceDataModule(L.LightningDataModule):
         challenge: str="multicoil",
         test_filter: Optional[Callable] = None,
         batch_size: int = 1,
-        num_workers: int = 4,
+        num_workers: int = 0,   # still have issues with memory accumulation
         distributed_sampler: bool = False,
         num_adj_slices: int = 5,
     ):

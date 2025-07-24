@@ -1,5 +1,7 @@
 from typing import Dict, NamedTuple, Optional, Sequence, Tuple, Union
 
+import os
+import re
 import numpy as np
 import torch
 
@@ -282,10 +284,18 @@ class PromptMRSample(NamedTuple):
     
 class CmrxReconDataTransform:
     """
-    CmrxRecon23&24 Data Transformer for training
+    CmrxRecon23&24&25 Data Transformer for training
     """
 
-    def __init__(self, mask_func: Optional[MaskFunc] = None, uniform_resolution= None, use_seed: bool = True, mask_type: Optional[str] = None, test_num_low_frequencies: Optional[int] = None):
+    def __init__(
+        self, 
+        mask_func: Optional[MaskFunc] = None, 
+        uniform_resolution= None,
+        use_seed: bool = True, 
+        mask_type: Optional[str] = None, 
+        test_num_low_frequencies: Optional[int] = None,
+        already_undersampled: bool = False
+    ):
         """
         Args:
             mask_func: Optional; A function that can create a mask of
@@ -308,6 +318,9 @@ class CmrxReconDataTransform:
         if mask_func is None:
             self.mask_type = mask_type
             self.num_low_frequencies = test_num_low_frequencies
+
+        # If True, assume incoming k-space is already undersampled
+        self.already_undersampled = already_undersampled
 
     def __call__(
         self,
@@ -352,8 +365,39 @@ class CmrxReconDataTransform:
 
         if self.mask_func is not None:
             masked_kspace, mask_torch, num_low_frequencies, mask_type, acc = apply_mask(
-                kspace_torch, self.mask_func, seed=seed, padding=(acq_start, acq_end), slice_idx=slice_num, num_t=num_t,num_slc=num_slc
+                kspace_torch, 
+                self.mask_func, 
+                seed=seed, 
+                padding=(acq_start, acq_end), 
+                slice_idx=slice_num, 
+                num_t=num_t,
+                num_slc=num_slc
             )
+        
+        elif self.already_undersampled:
+            # ─── inference: skip re-masking, parse acc & mask_type from filename ───
+            base = os.path.basename(fname)
+            stem = os.path.splitext(base)[0]
+            m = re.match(r'.*kus_([A-Za-z]+?)(\d+)$', stem)
+            if not m:
+                raise ValueError(f"Cannot parse acceleration/mask_type from filename: {stem}")
+
+            raw = m.group(1).lower()      # e.g. "ktradial", "uniform", "ktgaussian"
+            acc = int(m.group(2))         # e.g. 8, 16, 24
+
+            if 'uniform' in raw:
+                mask_type = 'uniform'
+            elif 'radial' in raw:
+                mask_type = 'kt_radial'
+            elif 'random' in raw or 'gaussian' in raw:
+                mask_type = 'kt_random'
+            else:
+                raise ValueError(f"Unrecognized mask keyword '{raw}' in filename: {stem}")
+
+            masked_kspace       = kspace_torch
+            mask_torch          = to_tensor(mask).to(torch.bool)
+            num_low_frequencies = self.num_low_frequencies
+            
         else:
             masked_kspace = kspace_torch
             mask_torch = to_tensor(mask)

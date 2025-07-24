@@ -342,6 +342,7 @@ class PromptMR(nn.Module):
         masked_kspace: torch.Tensor,
         mask: torch.Tensor,
         num_low_frequencies: torch.Tensor,
+        attrs: dict = None,     # used for compatibility with cmr2025 dataset
         mask_type: Tuple[str] = ("cartesian",),
         use_checkpoint: bool = False,
         compute_sens_per_coil: bool = False, # can further reduce the memory usage

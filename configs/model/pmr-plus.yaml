@@ -3,7 +3,7 @@ model:
   class_path: pl_modules.PromptMrModule
   init_args:
     num_cascades: 12
-    num_adj_slices: 5
+    num_adj_slices: 3
     n_feat0: 48
     feature_dim: [72,96,120]
     prompt_dim: [24,48,72]

@@ -1,11 +1,11 @@
 #!/bin/bash -l
 #SBATCH -J promptumamba_predict
-#SBATCH --time=5:00:00
+#SBATCH --time=00-06:00:00
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
 #SBATCH --gpus-per-node=v100l:1
-#SBATCH --cpus-per-gpu=8
-#SBATCH --mem=64G
+#SBATCH --cpus-per-task=1
+#SBATCH --mem=96G
 #SBATCH --account=def-punithak
 #SBATCH --mail-type=BEGIN,END,FAIL
 #SBATCH --mail-user=ngcarpen@ualberta.ca
@@ -20,15 +20,6 @@ export OMP_NUM_THREADS=$SLURM_CPUS_PER_TASK
 # Point to project
 export PROJECT_ROOT=/home/nicocarp/scratch/PromptUMamba
 export PYTHONPATH=$PROJECT_ROOT:$PYTHONPATH
-
-# # —————— WandB configuration ——————
-# # Load all variables from .env
-# set -o allexport
-# source $PROJECT_ROOT/.env
-# set +o allexport
-
-# # name project in WandB
-# export WANDB_PROJECT="PromptMamba_Predict"
 
 module load StdEnv/2023
 module load gcc/12.3
@@ -47,4 +38,4 @@ python -m pip install --no-index -r $PROJECT_ROOT/configs/env_local.txt
 python -m pip install -r $PROJECT_ROOT/configs/env_pypi.txt
 
 # Run evaluation
-python main.py predict --config configs/inference/promptmamba/cmr25-cardiac.yaml
+python $PROJECT_ROOT/main.py predict --config $PROJECT_ROOT/configs/inference/promptmamba/cmr25-cardiac.yaml
