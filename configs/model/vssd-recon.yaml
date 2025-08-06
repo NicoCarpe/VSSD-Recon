@@ -1,0 +1,99 @@
+############# Micro VSSD Blocks #############
+
+# model:
+#   class_path: pl_modules.PromptMrModule
+#   init_args:
+#     num_cascades:       12
+#     num_adj_slices:     5
+#     patch_size:         4
+#     d_state:            64
+#     n_feat0:            48
+#     num_heads:          [2,4,8,16]
+#     feature_dim:        [96,192,384]
+#     sens_n_feat0:       48
+#     sens_feature_dim:   [96,192,384]
+#     n_enc_cab:          [2,2,8]
+#     n_dec_cab:          [2,2,8]
+#     n_skip_cab:         [0,0,0]
+#     n_bottleneck_cab:   4   
+#     adaptive_input:     false
+#     n_buffer:           0
+#     n_history:          0
+#     use_sens_adj:       true
+#     lr_gamma:           0.1
+#     weight_decay:       1e-2
+#     use_checkpoint:     false
+
+# # add model tags to wandb
+# trainer:
+#   logger:
+#     class_path: lightning.pytorch.loggers.WandbLogger
+#     init_args:
+#       tags: [VSSD-Recon]
+
+############# Micro (bigger features) VSSD Blocks #############
+
+model:
+  class_path: pl_modules.PromptMrModule
+  init_args:
+    num_cascades:       12
+    num_adj_slices:     5
+    patch_size:         4
+    d_state:            64
+    n_feat0:            64
+    num_heads:          [2,4,8,16]
+    feature_dim:        [128,256,512]
+    sens_n_feat0:       64
+    sens_feature_dim:   [128,256,512]
+    n_enc_cab:          [2,2,8]
+    n_dec_cab:          [2,2,8]
+    n_skip_cab:         [0,0,0]
+    n_bottleneck_cab:   4   
+    adaptive_input:     false
+    n_buffer:           0
+    n_history:          0
+    use_sens_adj:       true
+    lr_gamma:           0.1
+    weight_decay:       1e-2
+    use_checkpoint:     false
+
+# add model tags to wandb
+trainer:
+  logger:
+    class_path: lightning.pytorch.loggers.WandbLogger
+    init_args:
+      tags: [VSSD-Recon]
+
+
+############# Tiny VSSD Blocks #############
+
+# model:
+#   class_path: pl_modules.PromptMrModule
+#   init_args:
+#     num_cascades:       12
+#     num_adj_slices:     3
+#     patch_size:         4
+#     d_state:            64
+#     n_feat0:            64
+#     num_heads:          [2,4,8,16]
+#     feature_dim:        [128,256,512]
+#     sens_n_feat0:       64
+#     sens_feature_dim:   [128,256,512]
+#     n_enc_cab:          [2,4,12]
+#     n_dec_cab:          [2,4,12]
+#     n_skip_cab:         [0,0,0]
+#     n_bottleneck_cab:   4   
+#     adaptive_input:     false
+#     n_buffer:           0
+#     n_history:          0
+#     use_sens_adj:       true
+#     lr_gamma:           0.1
+#     weight_decay:       1e-2
+#     use_checkpoint:     true
+
+# # add model tags to wandb
+# trainer:
+#   logger:
+#     class_path: lightning.pytorch.loggers.WandbLogger
+#     init_args:
+#       tags: [VSSD-Recon]

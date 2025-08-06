@@ -389,6 +389,7 @@ class CmrxReconSliceDataset(torch.utils.data.Dataset):
         return len(self.raw_samples)
 
     def __getitem__(self, i: int):
+        # we expect to read kspace in as (t, nz, nc, ny, nx), dtype=complex64
         fname, data_slice, metadata = self.raw_samples[i]
         kspace = []
         with h5py.File(str(fname), 'r') as hf:
@@ -503,7 +504,13 @@ class CmrxReconInferenceSliceDataset(torch.utils.data.Dataset):
     def _get_volume_shape_info(self):
         shape_dict = {} #defaultdict(dict)
         for path in self.volume_paths:
-            shape_dict[path]=load_shape(path)
+            shape = load_shape(path)
+
+            # NOTE: we need to correctly handle the non-temporal images
+            if len(shape) == 4:
+                shape = (1,) + shape
+
+            shape_dict[path] = shape
         return shape_dict
  
     def _get_ti_adj_idx_list(self, ti, num_t_in_volume):
@@ -530,10 +537,7 @@ class CmrxReconInferenceSliceDataset(torch.utils.data.Dataset):
         kspace_volume = load_kdata(path)
         if kspace_volume.ndim != 5:
             # BlackBlood, T1w, T2w → add time dim
-            kspace_volume = kspace_volume[None]
-        
-        # (nt, nz, nc, nx, ny) → (nt, nz, nc, ny, nx)
-        kspace_volume = kspace_volume.transpose(0, 1, 2, 4, 3)
+            kspace_volume = kspace_volume[None, ...]
 
         # --- YEAR-SPECIFIC MASK LOGIC ---
         if self.year == 2025:
@@ -541,11 +545,11 @@ class CmrxReconInferenceSliceDataset(torch.utils.data.Dataset):
                             .replace('_kus_', '_mask_')
             raw_mask = load_mask(mask_path)  # may be 2D (nx,ny) or 3D (nt,nx,ny)
             if raw_mask.ndim == 3:
-                # dynamic mask: (nt, nx, ny) → (nt, ny, nx, 1)
-                mask = raw_mask.transpose(0, 2, 1)[..., None]
+                # dynamic mask: (nx, ny, nt) → (nt, ny, nx, 1)
+                mask = raw_mask[..., None]
             elif raw_mask.ndim == 2:
                 # static mask: (nx, ny) → (1, ny, nx, 1)
-                mask = raw_mask.T[None, ..., None]
+                mask = raw_mask[None, ..., None]
             else:
                 raise ValueError(f"Unexpected mask ndim={raw_mask.ndim} for {mask_path}")
 

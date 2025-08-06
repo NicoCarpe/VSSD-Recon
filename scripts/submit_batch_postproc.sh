@@ -17,7 +17,7 @@ module load StdEnv/2023
 module load matlab/2024b.1
 
 # set project root
-export PROJECT_ROOT=/home/nicocarp/scratch/PromptUMamba
+export PROJECT_ROOT=/home/nicocarp/scratch/VSSD-Recon
 
 matlab -singleCompThread -batch "\
   cd('$PROJECT_ROOT/support/CMRxRecon2025/CMRxReconDemo'); \

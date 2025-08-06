@@ -1,5 +1,5 @@
 #!/bin/bash -l
-#SBATCH -J promptumamba_predict
+#SBATCH -J VSSD-Recon_predict
 #SBATCH --time=00-06:00:00
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
@@ -18,7 +18,7 @@ export HDF5_USE_FILE_LOCKING=FALSE
 export OMP_NUM_THREADS=$SLURM_CPUS_PER_TASK
 
 # Point to project
-export PROJECT_ROOT=/home/nicocarp/scratch/PromptUMamba
+export PROJECT_ROOT=/home/nicocarp/scratch/VSSD-Recon
 export PYTHONPATH=$PROJECT_ROOT:$PYTHONPATH
 
 module load StdEnv/2023
@@ -38,4 +38,4 @@ python -m pip install --no-index -r $PROJECT_ROOT/configs/env_local.txt
 python -m pip install -r $PROJECT_ROOT/configs/env_pypi.txt
 
 # Run evaluation
-python $PROJECT_ROOT/main.py predict --config $PROJECT_ROOT/configs/inference/promptmamba/cmr25-cardiac.yaml
+python $PROJECT_ROOT/main.py predict --config $PROJECT_ROOT/configs/inference/VSSD-Recon/cmr25-cardiac.yaml

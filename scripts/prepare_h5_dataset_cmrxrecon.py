@@ -83,7 +83,7 @@ if __name__ == '__main__':
         device = torch.device('cpu')
 
     for ff in tqdm(file_list):
-        ##* get info from path
+        # get info from path
         if year == 2025:
             center = ff.split('/')[-4]
             machine = ff.split('/')[-3]
@@ -94,25 +94,19 @@ if __name__ == '__main__':
         else:
             save_name = f'{fid}_{ftype}'
             
-        ##*remove bad files
+        # remove bad files
         if remove_bad_files(save_name) and year == 2024:
             continue
 
-        ##* load kdata
+        # load kdata
         kdata = load_kdata(ff)
         
-        # #* swap phase_encoding and readout
-        # (nt, nz, nc, nx, ny) --> (nt, nz, nc, ny, nx)  
-        if year == 2024:   
-            kdata = kdata.swapaxes(-1,-2)
-        
-        elif year == 2025:  
+        # adjust inconcistent inputs and downcast data
+        if year == 2025:  
             if center == "Center007":
-                kdata = kdata.transpose(4, 3, 2, 0, 1) 
-            elif len(kdata.shape) == 5:
-                kdata = kdata.transpose(0, 1, 2, 4, 3) 
+                kdata = kdata.transpose(4, 3, 2, 1, 0) 
             elif len(kdata.shape) == 4: 
-                kdata = kdata.transpose(3, 2, 0, 1)
+                kdata = kdata.transpose(3, 2, 1, 0)
                 # add a temporal dimension for consistency
                 kdata = kdata[None, ...]
             # 2025 data stored in complex128 so needs to be downcast
@@ -120,16 +114,16 @@ if __name__ == '__main__':
         
         print(f"kdata, dtype, file: {kdata.shape}, {kdata.dtype}, {save_name}", flush=True)
 
-        ##* remove bad slices
+        # remove bad slices
         if year == 2024:
             kdata = remove_bad_slices(kdata, save_name)
         
-        ##* get rss from kdata
+        # get rss from kdata
         kdata_th = to_tensor(kdata)
         img_coil = ifft2c(kdata_th).to(device)
         img_rss = rss_complex(img_coil, dim=-3).cpu().numpy()
 
-        ##* save h5
+        # save h5
         file = h5py.File(join(save_folder, save_name + '.h5'), 'w')
         file.create_dataset('kspace', data=kdata)
         file.create_dataset('reconstruction_rss', data=img_rss)
@@ -147,40 +141,43 @@ if __name__ == '__main__':
             file.attrs['machine'] = machine
             file.attrs['center'] = center
             
-            base, _ = os.path.splitext(ff)  
-            csv_path = f"{base}_info.csv"
+            # NOTE: This can be used if a metadata csv accompanies the image
+            
+            # base, _ = os.path.splitext(ff)  
+            # csv_path = f"{base}_info.csv"
 
-            if os.path.isfile(csv_path):
-                try:
-                    with open(csv_path, newline="") as csvfile:
-                        # assume first row is header; fieldnames might be e.g. ["Parameter", "Value"]
-                        reader = csv.DictReader(csvfile)
-                        # if the CSV has only positional columns, DictReader.fieldnames 
-                        # will be something like ['Parameter','Value'], else use positional fallback:
-                        for row in reader:
-                            # dict‐lookup with fallback to list‐index in case headers differ
-                            key     = (row.get("Parameter") or row.get(reader.fieldnames[0], "")).strip()
-                            val_str = (row.get("Value")     or row.get(reader.fieldnames[1], "")).strip()
+            # if os.path.isfile(csv_path):
+            #     try:
+            #         with open(csv_path, newline="") as csvfile:
+            #             # assume first row is header; fieldnames might be e.g. ["Parameter", "Value"]
+            #             reader = csv.DictReader(csvfile)
+            #             # if the CSV has only positional columns, DictReader.fieldnames 
+            #             # will be something like ['Parameter','Value'], else use positional fallback:
+            #             for row in reader:
+            #                 # dict‐lookup with fallback to list‐index in case headers differ
+            #                 key     = (row.get("Parameter") or row.get(reader.fieldnames[0], "")).strip()
+            #                 val_str = (row.get("Value")     or row.get(reader.fieldnames[1], "")).strip()
 
-                            if not key or not val_str:
-                                continue
+            #                 if not key or not val_str:
+            #                     continue
 
-                            # convert numeric values when possible
-                            try:
-                                val = float(val_str)
-                            except ValueError:
-                                val = val_str
+            #                 # convert numeric values when possible
+            #                 try:
+            #                     val = float(val_str)
+            #                 except ValueError:
+            #                     val = val_str
 
-                            file.attrs[key] = val
+            #                 file.attrs[key] = val
 
-                except Exception as e:
-                    print(f"  Warning: couldn’t read CSV {csv_path}: {e}", flush=True)
-            else:
-                print(f"  Warning: {csv_path} not found; skipping CSV metadata.", flush=True)
+            #     except Exception as e:
+            #         print(f"  Warning: couldn’t read CSV {csv_path}: {e}", flush=True)
+            # else:
+            #     print(f"  Warning: {csv_path} not found; skipping CSV metadata.", flush=True)
 
         file.close()
 
     print('## step 2: split h5 dataset to train and val using symbolic links')
+
     # split dataset to train/ val according to provided json file
     with open(split_json, 'r', encoding="utf-8") as f:
         split_dict = json.load(f)

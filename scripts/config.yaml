@@ -10,7 +10,7 @@ trainer:
   callbacks:
   - class_path: __main__.CustomWriter
     init_args:
-      output_dir: /home/nicocarp/scratch/PromptUMamba/predict/cmr25-cardiac/test_promptmamba_R2
+      output_dir: /home/nicocarp/scratch/VSSD-Recon/predict/cmr25-cardiac/test_VSSD-Recon_R1
       write_interval: batch_and_epoch
   fast_dev_run: false
   max_epochs: null
@@ -106,7 +106,7 @@ data:
   class_path: pl_modules.InferenceDataModule
   init_args:
     slice_dataset: data.CmrxReconInferenceSliceDataset
-    data_path: /home/nicocarp/scratch/PromptUMamba/raw_datasets/MICCAIChallenge2025/ChallengeDataValSet/TaskR2
+    data_path: /home/nicocarp/scratch/VSSD-Recon/raw_datasets/MICCAIChallenge2025/ChallengeDataValSet/TaskR1
     test_transform:
       class_path: data.CmrxReconDataTransform
       init_args:
@@ -129,4 +129,4 @@ data:
 optimizer: null
 lr_scheduler: null
 return_predictions: null
-ckpt_path: /home/nicocarp/scratch/PromptUMamba/scripts/exp/cmr25-cardiac/promptmamba/deep_recon/8bbk6x8z/checkpoints/last.ckpt
+ckpt_path: /home/nicocarp/scratch/VSSD-Recon/scripts/exp/cmr25-cardiac/VSSD-Recon/deep_recon/8bbk6x8z/checkpoints/last.ckpt

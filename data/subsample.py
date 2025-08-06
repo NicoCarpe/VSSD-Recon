@@ -728,8 +728,7 @@ class CmrxRecon24MaskFunc(MaskFunc):
 
         return mask, num_low_frequencies, mask_type, acc
 
-    def sample_mask(self,mask_type, shape,offset=None,  slice_idx=None,num_t=None,num_slc=None):
-        
+    def sample_mask(self, mask_type, shape, offset=None, slice_idx=None, num_t=None, num_slc=None):  
         if mask_type=='uniform':
             mask, num_low_frequencies, acc = self.uniform_mask.sample_uniform_mask(shape, offset, self.rng) #, self.seed)
         elif mask_type=='kt_uniform':
@@ -741,7 +740,7 @@ class CmrxRecon24MaskFunc(MaskFunc):
             h,w = shape[-3:-1] # (h,w)
             acc = self.rng.choice(self.mask_dict[mask_type])
             num_low_frequencies = 20 # 16 for 2023, 2024 cmr datasets, use 20 for 2025
-            mask_ = self.radial_mask_bank[f'acc{acc}_{w}x{h}'][:num_t]
+            mask_ = self.radial_mask_bank[f'acc{acc}_{h}x{w}'][:num_t]
 
             if self.seed is None: ##* training
                 ti = self.rng.randint(num_t)
@@ -751,7 +750,7 @@ class CmrxRecon24MaskFunc(MaskFunc):
             select_list = self._get_ti_adj_idx_list(ti,num_t)
             
             mask = mask_[select_list]
-            mask = mask[...,None] # torch.Size([5, 448, 204,1])
+            mask = mask[...,None] # torch.Size([5,204,448,1])
 
         else:
             raise ValueError(f"{mask_type} not supported")
@@ -764,7 +763,7 @@ class CmrxRecon24MaskFunc(MaskFunc):
         with h5py.File(mask_path, 'r') as hf:
             keys = list(hf.keys())
             for key_ in keys:
-                radial_mask_bank[key_] = torch.from_numpy(hf[key_][()].transpose(0,2,1))
+                radial_mask_bank[key_] = torch.from_numpy(hf[key_][()])
         return radial_mask_bank
 
 class CmrxRecon24TestValMaskFunc(CmrxRecon24MaskFunc):

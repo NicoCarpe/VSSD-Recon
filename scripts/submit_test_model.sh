@@ -1,5 +1,5 @@
 #!/bin/bash -l
-#SBATCH -J promptmamba_test
+#SBATCH -J VSSD-Recon_test
 #SBATCH --time=00:30:00
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
@@ -18,7 +18,7 @@ export HDF5_USE_FILE_LOCKING=FALSE
 export OMP_NUM_THREADS=$SLURM_CPUS_PER_TASK
 
 # Point to your project
-export PROJECT_ROOT=/home/nicocarp/scratch/PromptUMamba
+export PROJECT_ROOT=/home/nicocarp/scratch/VSSD-Recon
 export PYTHONPATH=$PROJECT_ROOT:$PYTHONPATH
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 

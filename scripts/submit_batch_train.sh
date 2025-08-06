@@ -1,10 +1,10 @@
 #!/bin/bash -l
-#SBATCH -J promptumamba_train
+#SBATCH -J VSSD-Recon_train
 #SBATCH --time=03-00:00:00
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=4
 #SBATCH --gpus-per-node=v100l:4
-#SBATCH --cpus-per-task=3       
+#SBATCH --cpus-per-task=2       
 #SBATCH --mem=124GB                 
 #SBATCH --account=def-punithak
 #SBATCH --mail-type=BEGIN,END,FAIL
@@ -18,7 +18,7 @@ export HDF5_USE_FILE_LOCKING=FALSE
 export OMP_NUM_THREADS=$SLURM_CPUS_PER_TASK
 
 # Point to project
-export PROJECT_ROOT=/home/nicocarp/scratch/PromptUMamba
+export PROJECT_ROOT=/home/nicocarp/scratch/VSSD-Recon
 export PYTHONPATH=$PROJECT_ROOT:$PYTHONPATH
 
 # —————— WandB configuration ——————
@@ -28,7 +28,7 @@ source $PROJECT_ROOT/.env
 set +o allexport
 
 # name project in WandB
-export WANDB_PROJECT="PromptMamba_Training"
+export WANDB_PROJECT="VSSD-Recon_Training"
 
 module load StdEnv/2023
 module load gcc/12.3
@@ -48,5 +48,5 @@ python -m pip install -r $PROJECT_ROOT/configs/env_pypi.txt
 
 srun python $PROJECT_ROOT/main.py fit \
     --config $PROJECT_ROOT/configs/base.yaml \
-    --config $PROJECT_ROOT/configs/model/pmamba.yaml \
-    --config $PROJECT_ROOT/configs/train/promptmamba/cmr25-cardiac.yaml 
+    --config $PROJECT_ROOT/configs/model/vssd-recon.yaml \
+    --config $PROJECT_ROOT/configs/train/vssd-recon/cmr25-cardiac.yaml 

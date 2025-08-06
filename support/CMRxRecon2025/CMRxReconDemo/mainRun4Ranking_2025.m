@@ -10,9 +10,9 @@ clc; clear;
 addpath('./utils');
 
 % set your data directories
-basePath     = '/home/nicocarp/scratch/PromptUMamba/predict/cmr25-cardiac/test_promptmamba_R2/reconstructions/';    % superior directory of 'MultiCoil/'
-mainSavePath = '/home/nicocarp/scratch/PromptUMamba/predict/cmr25-cardiac/test_promptmamba_R2/Submission/';     % output path
-taskType     = 'TaskR2';                      % options: 'TaskR1', 'TaskR2','TaskS1','TaskS2'
+basePath     = '/home/nicocarp/scratch/VSSD-Recon/predict/cmr25-cardiac/test_VSSD-Recon_R1/reconstructions' %'/home/nicocarp/scratch/VSSD-Recon/predict/cmr25-cardiac/test_VSSD-Recon_R2/reconstructions/';    % superior directory of 'MultiCoil/'
+mainSavePath = '/home/nicocarp/scratch/VSSD-Recon/predict/cmr25-cardiac/test_VSSD-Recon_R1/Submission/';     % output path
+taskType     = 'TaskR1';                      % options: 'TaskR1', 'TaskR2','TaskS1','TaskS2'
 
 %% fixed settings
 dataTypeList = {'Cine','BlackBlood','T1w','T2w','Mapping','Flow2d','Perfusion','LGE','T1rho'};

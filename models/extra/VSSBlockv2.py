@@ -10,7 +10,7 @@ from functools import partial
 
 from einops import rearrange, repeat
 
-from timm.models.layers import DropPath
+from timm.layers import DropPath
 
 from mamba_ssm.ops.triton.layernorm_gated import RMSNorm as RMSNormGated
 from mamba_ssm.ops.triton.ssd_combined import mamba_chunk_scan_combined, mamba_split_conv1d_scan_combined

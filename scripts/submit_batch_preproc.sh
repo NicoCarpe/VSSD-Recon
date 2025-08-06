@@ -1,5 +1,5 @@
 #!/bin/bash -l
-#SBATCH -J promptumamba_preproc
+#SBATCH -J VSSD-Recon_preproc
 #SBATCH --time=0-04:30:00
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1            
@@ -16,7 +16,7 @@ export HDF5_USE_FILE_LOCKING=FALSE
 export OMP_NUM_THREADS=$SLURM_CPUS_PER_TASK 
 
 # Set PROJECT_ROOT and PYTHONPATH
-export PROJECT_ROOT=/home/nicocarp/scratch/PromptUMamba
+export PROJECT_ROOT=/home/nicocarp/scratch/VSSD-Recon
 export PYTHONPATH=$PROJECT_ROOT:$PYTHONPATH
 
 module purge

@@ -6,149 +6,34 @@ from typing import Optional, Tuple
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch.nn import MultiheadAttention
+import torch.utils.checkpoint as checkpoint
+from timm.layers import DropPath, to_2tuple, trunc_normal_
 from einops import rearrange
 
 from data import transforms
-try:
-    from .VSSBlock import VSSBlock
-    # from .VSSBlockv2 import VSSBlock
-except:
-    from VSSBlock import VSSBlock
-    # from VSSBlockv2 import VSSBlock
-
-
-# ########################################################################
-# ---------- Prompt Block -----------------------
-
-class PromptBlock(nn.Module):
-   """
-   FiLM-conditioned cross-attention prompt block.
-   Replaces the original PromptBlock with:
-     1) FiLM-modulated prompt prototypes
-     2) Cross-attention between feature queries and prompt keys/values
-   Returns a prompt map of shape (B, prompt_dim, H, W).
-   """
-   def __init__(
-       self,
-       prompt_dim:   int,   # D_p
-       prompt_len:   int,   # L
-       prompt_size:  int,   # unused, kept for API compatibility
-       lin_dim:      int,   # C_feat
-       learnable_prompt: bool = False,
-       meta_dim:     int = 32,
-       num_heads:    int = 4,
-   ):
-       super().__init__()
-       # Prototype prompts: (L, D_p)
-       self.prompt = nn.Parameter(
-           torch.randn(prompt_len, prompt_dim),
-           requires_grad=learnable_prompt
-       )
-
-       # FiLM generators: produce (B, L*D_p) → view as (B, L, D_p)
-       self.to_gamma = nn.Linear(meta_dim, prompt_len * prompt_dim)
-       self.to_beta  = nn.Linear(meta_dim, prompt_len * prompt_dim)
-
-       # Attention projections: queries from features, keys/values from prompts
-       self.to_q = nn.Linear(lin_dim, lin_dim, bias=False)
-       self.to_k = nn.Linear(prompt_dim, lin_dim, bias=False)
-       self.to_v = nn.Linear(prompt_dim, lin_dim, bias=False)
-
-       # Cross-attention 
-       self.attn = nn.MultiheadAttention(
-           embed_dim=lin_dim,
-           num_heads=4,           # fixed
-           batch_first=True
-       )
-
-       # Output projections: from C_feat (lin_dim) → prompt_dim
-       self.to_out = nn.Linear(lin_dim, prompt_dim, bias=False)
-
-   def forward(self, x: torch.Tensor, meta_emb: torch.Tensor) -> torch.Tensor:
-       """
-       x:         (B, C_feat,  H, W)
-       meta_emb:  (B, meta_dim)
-       returns:   (B, C_feat,  H, W)
-       """
-       B, C, H, W = x.shape
-       L, Dp = self.prompt.shape
-
-       # — a) FiLM-modulate prototypes → (B, L, D_p)
-       gamma = self.to_gamma(meta_emb).view(B, L, Dp)
-       beta  = self.to_beta(meta_emb).view(B, L, Dp)
-       prompts = gamma * self.prompt.unsqueeze(0) + beta
-
-       # — b) flatten features → (B, N=H*W, C_feat)
-       feats = x.flatten(2).permute(0, 2, 1)
-
-       # — c) project to Q, K, V
-       Q = self.to_q(feats)       # (B, N, C_feat)
-       K = self.to_k(prompts)     # (B, L, C_feat)
-       V = self.to_v(prompts)     # (B, L, C_feat)
-
-       # — d) cross-attention
-       attn_out, _ = self.attn(Q, K, V)  # (B, N, C_feat)
-
-       # — e) project down to prompt_dim and reshape
-       prompt = self.to_out(attn_out)               # (B, N, prompt_dim)
-       prompt = prompt.permute(0, 2, 1).view(B, Dp, H, W)
-       return prompt
-
-
-#  class PromptBlock(nn.Module):
-#      def __init__(
-#         self, 
-#         prompt_dim=128, 
-#         prompt_len=5, 
-#         prompt_size=96, 
-#         lin_dim=192, 
-#         learnable_prompt=False, 
-#         meta_dim=32,
-#         num_heads=4,
-#         ):
-#         super().__init__()
-#         self.prompt_param = nn.Parameter(torch.rand(1, prompt_len, prompt_dim, prompt_size, prompt_size), 
-#                                         requires_grad=learnable_prompt)
-#         # separate image‐head and meta‐head
-#         self.linear_img  = nn.Linear(lin_dim,  prompt_len)
-#         self.linear_meta = nn.Linear(meta_dim, prompt_len)
-#         self.dec_conv3x3 = nn.Conv2d(prompt_dim, prompt_dim, kernel_size=3, stride=1, padding=1, bias=False)
-
-#      def forward(self, x: torch.Tensor, meta_emb: torch.Tensor) -> torch.Tensor:
-#          B, C, H, W = x.shape
-#          emb = x.mean(dim=(-2, -1))
-
-#          prompt_weights = F.softmax(self.linear_img(emb) + self.linear_meta(meta_emb), dim=1)
-
-#          prompt_param = self.prompt_param.unsqueeze(0).repeat(B, 1, 1, 1, 1, 1).squeeze(1)
-#          prompt = prompt_weights.unsqueeze(-1).unsqueeze(-1).unsqueeze(-1) * prompt_param
-#          prompt = torch.sum(prompt, dim=1)
-
-#          prompt = F.interpolate(prompt, (H, W), mode="bilinear")
-#          prompt = self.dec_conv3x3(prompt)
-
-#          return prompt
+#from .VSSBlock import VSSBlock
+from .VSSDBlock import VSSDBlock
 
 
 ##########################################################################
 # ---------- Down Block -----------------------
 
 class DownBlock(nn.Module):
-    def __init__(self, in_dim, d_state, n_block, headdim, bias, dropout):
+    def __init__(self, in_dim, d_state, n_block, num_heads, dropout, **kwargs):
         super().__init__()
 
         self.encoder = nn.Sequential(*[
-            VSSBlock(
-                hidden_dim=in_dim,
-                d_state = d_state,
-                headdim = headdim,                
-                drop_path = dropout,
-                bias = bias
+            VSSDBlock(
+                dim=in_dim,
+                d_state=d_state,
+                num_heads=num_heads,                
+                drop=dropout,
+                attn_type='mamba2',
+                **kwargs
             ) for _ in range(n_block)
         ])
         
-        self.down = PatchMerge(dim=in_dim, norm_layer=nn.LayerNorm)
+        self.down = PatchMerge(dim=in_dim)
 
     def forward(self, x):
         enc = self.encoder(x)  # Shape: (B, C, H, W)
@@ -161,45 +46,39 @@ class DownBlock(nn.Module):
 # ---------- Up Block -----------------------
 
 class UpBlock(nn.Module):
-    def __init__(self, in_dim, d_state, prompt_dim, n_block, headdim, bias, dropout, n_history=0):
+    def __init__(self, in_dim, d_state, n_block, num_heads, bias, dropout, n_history=0, **kwargs):
         super().__init__()
         # momentum layer
         self.n_history = n_history
         if n_history > 0:
             self.momentum = nn.Sequential(
                 nn.Conv2d(in_dim*(n_history+1), in_dim, kernel_size=1, bias=bias),
-                VSSBlock(
-                    hidden_dim=in_dim,
+                VSSDBlock(
+                    dim=in_dim,
                     d_state = d_state,
-                    headdim = headdim,
-                    drop_path = dropout,
-                    bias = bias
+                    num_heads = num_heads,
+                    drop = dropout,
+                    attn_type='mamba2',
+                    **kwargs
                 )
             )
 
-        self.fuse = nn.Sequential(*[
-            VSSBlock(
-                hidden_dim=in_dim+prompt_dim,
+        self.decoder = nn.Sequential(*[
+            VSSDBlock(
+                dim=in_dim//2,          # this operation happens after patch expand
                 d_state = d_state,
-                headdim = headdim,
-                drop_path = dropout,
-                bias = bias
+                num_heads = num_heads,
+                drop = dropout,
+                attn_type='mamba2',
+                **kwargs
             ) for _ in range(n_block)
         ])
-        self.reduce = nn.Conv2d(in_dim+prompt_dim, in_dim, kernel_size=1, bias=bias)
 
-        self.up = PatchExpand(dim=in_dim, dim_scale=2, norm_layer=nn.LayerNorm)
+        self.up = PatchExpand(dim=in_dim, dim_scale=2)
 
-        # why this one
-        self.ca = VSSBlock(
-                hidden_dim=in_dim//2,   # this operation happens after patch expand
-                d_state = d_state,
-                headdim = headdim,
-                drop_path = dropout,
-                bias = bias
-            )
 
-    def forward(self, x, prompt_dec, skip, history_feat: Optional[torch.Tensor] = None):
+    def forward(self, x, skip, history_feat: Optional[torch.Tensor] = None):
+        
         # momentum layer
         if self.n_history > 0:
             if history_feat is None:
@@ -209,34 +88,29 @@ class UpBlock(nn.Module):
 
             x = self.momentum(x)
 
-        x = torch.cat([x, prompt_dec], dim=1)
-        x = self.fuse(x)
-        x = self.reduce(x)  # reduce channel count (linear projection / 1x1 conv)
+        x = self.up(x) + skip 
+        dec = self.decoder(x)
 
-        x_up = self.up(x) 
-        
-        x = x_up + skip  # (B, C_out, 2H, 2W)
-        x = self.ca(x)
-
-        return x
+        return dec
 
 
 ##########################################################################
 # ---------- Skip Block -----------------------
 
 class SkipBlock(nn.Module):
-    def __init__(self, enc_dim, d_state, n_cab, headdim, bias, dropout):
+    def __init__(self, enc_dim, d_state, n_cab, num_heads, dropout, **kwargs):
         super().__init__()
         if n_cab == 0:
             self.skip_attn = nn.Identity()
         else:
             self.skip_attn = nn.Sequential(*[
-                VSSBlock(
-                    hidden_dim=enc_dim,
+                VSSDBlock(
+                    dim=enc_dim,
                     d_state = d_state,
-                    headdim = headdim,
-                    drop_path = dropout,
-                    bias = bias
+                    num_heads = num_heads,
+                    drop = dropout,
+                    attn_type='mamba2',
+                    **kwargs
                 ) for _ in range(n_cab)
             ])
 
@@ -341,9 +215,222 @@ class KspaceACSExtractor:
             return masked_kspace
 
 
-import torch
-import torch.nn as nn
-from einops import rearrange
+# ##########################################################################
+# # -------- Conv Layer -----------------------
+# class ConvLayer(nn.Module):
+#     def __init__(self, in_channels, out_channels, kernel_size=3, stride=1, padding=0, dilation=1, groups=1,
+#                  bias=True, dropout=0, norm=nn.BatchNorm2d, act_func=nn.ReLU):
+#         super(ConvLayer, self).__init__()
+#         self.dropout = nn.Dropout2d(dropout, inplace=False) if dropout > 0 else None
+#         self.conv = nn.Conv2d(
+#             in_channels,
+#             out_channels,
+#             kernel_size=(kernel_size, kernel_size),
+#             stride=(stride, stride),
+#             padding=(padding, padding),
+#             dilation=(dilation, dilation),
+#             groups=groups,
+#             bias=bias,
+#         )
+#         self.norm = norm(num_features=out_channels) if norm else None
+#         self.act = act_func() if act_func else None
+
+#     def forward(self, x: torch.Tensor) -> torch.Tensor:
+#         if self.dropout is not None:
+#             x = self.dropout(x)
+#         x = self.conv(x)
+#         if self.norm:
+#             x = self.norm(x)
+#         if self.act:
+#             x = self.act(x)
+#         return x
+
+
+# ##########################################################################
+# # -------- Conv Transpose Layer -----------------------
+
+# class ConvTransposeLayer(nn.Module):
+#     def __init__(self, in_channels, out_channels, kernel_size=3, stride=1, padding=0, output_padding=1, dilation=1, groups=1,
+#                  bias=True, dropout=0, norm=nn.BatchNorm2d, act_func=nn.ReLU):
+#         super(ConvTransposeLayer, self).__init__()
+#         self.dropout = nn.Dropout2d(dropout, inplace=False) if dropout > 0 else None
+#         self.conv_trans = nn.ConvTranspose2d(
+#             in_channels,
+#             out_channels,
+#             kernel_size=(kernel_size, kernel_size),
+#             stride=(stride, stride),
+#             padding=(padding, padding),
+#             output_padding=(output_padding, output_padding),
+#             dilation=(dilation, dilation),
+#             groups=groups,
+#             bias=bias,
+#         )
+#         self.norm = norm(num_features=out_channels) if norm else None
+#         self.act = act_func() if act_func else None
+
+#     def forward(self, x: torch.Tensor) -> torch.Tensor:
+#         if self.dropout is not None:
+#             x = self.dropout(x)
+#         x = self.conv_trans(x)
+#         if self.norm:
+#             x = self.norm(x)
+#         if self.act:
+#             x = self.act(x)
+#         return x
+
+
+
+# ##########################################################################
+# # -------- Patch Embed -----------------------
+
+# class PatchEmbed(nn.Module):
+#     r""" Stem
+
+#     Args:
+#         patch_size (int): Patch token size. Default: 4.
+#         in_chans (int): Number of input image channels. Default: 3.
+#         embed_dim (int): Number of linear projection output channels. Default: 96.
+#     """
+
+#     def __init__(self, patch_size=4, in_chans=3, embed_dim=96):
+#         super().__init__()
+#         # NOTE: patch_size does not control the reduction of the spatial dims here, more of a record
+
+#         self.patch_size = patch_size
+#         self.in_chans = in_chans
+#         self.embed_dim = embed_dim
+
+#         self.conv1 = ConvLayer(in_chans, embed_dim // 2, kernel_size=4, stride=2, padding=1, bias=False)
+#         self.conv2 = nn.Sequential(
+#             ConvLayer(embed_dim // 2, embed_dim // 2, kernel_size=4, stride=1, padding=1, bias=False),
+#             ConvLayer(embed_dim // 2, embed_dim // 2, kernel_size=4, stride=1, padding=1, bias=False, act_func=None)
+#         )
+#         self.conv3 = nn.Sequential(
+#             ConvLayer(embed_dim // 2, embed_dim * 4, kernel_size=4, stride=2, padding=1, bias=False),
+#             ConvLayer(embed_dim * 4, embed_dim, kernel_size=1, bias=False, act_func=None)
+#         )
+
+#     def forward(self, x):
+#         """
+#         # x: [B, C, H, W]
+#         """
+#         x = self.conv1(x)
+#         x = self.conv2(x) + x
+#         x = self.conv3(x)
+#         return x
+    
+
+# ##########################################################################
+# # -------- Patch Merge -----------------------
+# class PatchMerge(nn.Module):
+#     r""" Patch Merging Layer.
+
+#     Args:
+#         dim (int): Number of input channels.
+#     """
+
+#     def __init__(self, dim, ratio=4.0):
+#         super().__init__()
+#         self.dim = dim
+#         in_channels = dim
+#         out_channels = 2 * dim
+#         self.conv = nn.Sequential(
+#             ConvLayer(in_channels, int(out_channels * ratio), kernel_size=1, norm=None),
+#             ConvLayer(int(out_channels * ratio), int(out_channels * ratio), kernel_size=4, stride=2, padding=0, groups=int(out_channels * ratio), norm=None),
+#             ConvLayer(int(out_channels * ratio), out_channels, kernel_size=1, act_func=None)
+#         )
+
+#     def forward(self, x):
+#         """
+#         # x: [B, C, H, W]
+#         """
+#         x = self.conv(x)
+#         return x
+    
+# ##########################################################################
+# # -------- Patch Expand -----------------------
+
+# class PatchExpand(nn.Module):
+#     """
+#     Inverse of PatchMerge: upsamples spatial dims by dim_scale and halves channels.
+#     Args:
+#         dim (int): number of input channels
+#         dim_scale (int): upsampling factor per spatial dimension
+#     """
+#     def __init__(self, dim, dim_scale=2, ratio=4.0):
+#         super().__init__()
+#         self.dim = dim
+#         in_channels = dim
+#         out_channels = dim // dim_scale
+
+#         self.conv = nn.Sequential(
+#             ConvLayer(in_channels, int(out_channels * ratio), kernel_size=1, norm=None),
+#             ConvTransposeLayer(int(out_channels * ratio), int(out_channels * ratio), kernel_size=4, stride=dim_scale, padding=0, groups=int(out_channels * ratio), norm=None),
+#             ConvLayer(int(out_channels * ratio), out_channels, kernel_size=1, act_func=None)
+#         )
+
+#     def forward(self, x):
+#         """
+#         # x: [B, C, H, W]
+#         """
+#         x = self.conv(x)
+#         return x
+
+
+# ##########################################################################
+# # -------- Final Projection -----------------------
+
+# class FinalProjection(nn.Module):
+#     """
+#     Inverse of PatchMerge: upsamples spatial dims by dim_scale and halves channels.
+#     Args:
+#         dim (int): number of input channels
+#         dim_scale (int): upsampling factor per spatial dimension
+#     """
+#     def __init__(self, dim, out_channels, dim_scale=4, ratio=4.0):
+#         super().__init__()
+#         self.dim = dim
+#         in_channels = dim
+
+
+#         # TODO: try to make this more like the stem?
+#         # self.conv1 = ConvTransposeLayer(in_channels, int(out_channels * ratio), kernel_size=4, stride=2, padding=0, norm=None),
+#         # self.conv2 = nn.Sequential(
+#         #     ConvLayer(int(out_channels * ratio), int(out_channels * ratio), kernel_size=4, stride=1, padding=0, bias=False),
+#         #     ConvLayer(int(out_channels * ratio), int(out_channels * ratio), kernel_size=4, stride=1, padding=0, bias=False, act_func=None)
+#         # )
+#         # self.conv3 = nn.Sequential(
+#         #     ConvLayer(embed_dim // 2, embed_dim * 4, kernel_size=4, stride=2, padding=0, bias=False),
+#         #     ConvLayer(embed_dim * 4, embed_dim, kernel_size=1, bias=False, act_func=None)
+#         # )
+
+#         # self.conv1 = ConvLayer(in_chans, embed_dim // 2, kernel_size=4, stride=2, padding=0, bias=False)
+#         # self.conv2 = nn.Sequential(
+#         #     ConvLayer(embed_dim // 2, embed_dim // 2, kernel_size=4, stride=1, padding=0, bias=False),
+#         #     ConvLayer(embed_dim // 2, embed_dim // 2, kernel_size=4, stride=1, padding=0, bias=False, act_func=None)
+#         # )
+#         # self.conv3 = nn.Sequential(
+#         #     ConvLayer(embed_dim // 2, embed_dim * 4, kernel_size=4, stride=2, padding=0, bias=False),
+#         #     ConvLayer(embed_dim * 4, embed_dim, kernel_size=1, bias=False, act_func=None)
+#         # )
+
+#         self.conv = nn.Sequential(
+#             ConvLayer(in_channels, int(out_channels * ratio), kernel_size=1, norm=None),
+#             ConvTransposeLayer(int(out_channels * ratio), int(out_channels * ratio), kernel_size=4, stride=dim_scale, padding=0, groups=int(out_channels * ratio), norm=None),
+#             ConvLayer(int(out_channels * ratio), out_channels, kernel_size=1, act_func=None)
+#         )
+
+#     def forward(self, x):
+#         """
+#         # x: [B, C, H, W]
+#         """
+#         # x = self.conv1(x)
+#         # x = self.conv2(x) + x
+#         # x = self.conv3(x)
+#         x = self.conv(x)
+#         return x
+    
+
 
 ##########################################################################
 # -------- Patch Embed -----------------------
@@ -356,7 +443,7 @@ class PatchEmbed(nn.Module):
         embed_dim (int): number of output embedding channels
         norm_layer (nn.Module, optional): normalization layer applied to embeddings
     """
-    def __init__(self, patch_size=4, in_chans=3, embed_dim=96, norm_layer=None, **kwargs):
+    def __init__(self, patch_size, in_chans, embed_dim, norm_layer=None):
         super().__init__()
         if isinstance(patch_size, int):
             patch_size = (patch_size, patch_size)
@@ -393,7 +480,9 @@ class PatchMerge(nn.Module):
         self.norm = norm_layer(4 * dim)
 
     def forward(self, x):
+        """
         # x: [B, C, H, W]
+        """
         x = x.permute(0, 2, 3, 1).contiguous()  # → [B, H, W, C]
         B, H, W, C = x.shape
 
@@ -417,7 +506,7 @@ class PatchMerge(nn.Module):
 # -------- Patch Expand -----------------------
 
 class PatchExpand(nn.Module):
-    r"""
+    """
     Inverse of PatchMerge: upsamples spatial dims by dim_scale and halves channels.
     Args:
         dim (int): number of input channels
@@ -505,4 +594,3 @@ class FinalProjection(nn.Module):
 
         # → [B, out_chans, H*dim_scale, W*dim_scale]
         return x.permute(0, 3, 1, 2).contiguous()
-

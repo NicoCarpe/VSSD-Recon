@@ -1,4 +1,4 @@
-# Description: default configuration for PromptMamba model, may vary for different datasets
+# Description: default configuration for VSSD-Recon model, may vary for different datasets
 
 model:
   class_path: pl_modules.PromptMrModule
@@ -32,7 +32,7 @@ trainer:
   logger:
     class_path: lightning.pytorch.loggers.WandbLogger
     init_args:
-      tags: [promptmamba]
+      tags: [VSSD-Recon]
 
 
 # model:
@@ -50,10 +50,10 @@ trainer:
 #     prompt_size: [64,32,16]
 #     n_enc_cab: [2,3,3]
 #     n_dec_cab: [2,2,3]
-#     n_skip_cab: [0,0,0]
+#     n_skip_cab: [1,1,1]
 #     n_bottleneck_cab: 3    
 #     no_use_ca: false
-#     learnable_prompt: true
+#     learnable_prompt: false
 #     adaptive_input: false
 #     n_buffer: 0
 #     n_history: 0
@@ -67,4 +67,4 @@ trainer:
 #   logger:
 #     class_path: lightning.pytorch.loggers.WandbLogger
 #     init_args:
-#       tags: [promptmamba]
+#       tags: [PromptMamba]

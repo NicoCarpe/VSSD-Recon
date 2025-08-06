@@ -10,6 +10,7 @@ import pathlib
 from argparse import ArgumentParser
 from collections import defaultdict
 
+import matplotlib.pyplot as plt
 import numpy as np
 import lightning as L
 import torch
@@ -144,6 +145,7 @@ class MriModule(L.LightningModule):
                 target = val_logs["target"][i].unsqueeze(0)
                 output = val_logs["output"][i].unsqueeze(0)
                 img_zf = val_logs["img_zf"][i].unsqueeze(0)
+                # masked_kspace = val_logs["masked_kspace"][i].unsqueeze(0)
                 # print('debug sens on end_val: ', val_logs["sens_maps"].shape)
                 sens_maps = val_logs["sens_maps"][i].unsqueeze(0)
                 error = torch.abs(target - output)
@@ -151,10 +153,17 @@ class MriModule(L.LightningModule):
                 # mask = mask / mask.max() # looks betetr if not normalized
                 img_zf = img_zf / img_zf.max()
                 sens_maps = sens_maps / sens_maps.max()
+                # masked_kspace = masked_kspace / masked_kspace.max()
                 
                 output = output / output.max()
                 target = target / target.max()
                 error = error / error.max()
+
+                # for converting error to a heatmap
+                cm = plt.get_cmap('summer')
+                error_colored = cm(error.squeeze().detach().cpu().numpy())[:, :, :3]  # H, W, 3
+                error = torch.from_numpy(error_colored).permute(2, 0, 1).float()  # 3, H, W
+
                 # print('debug: ', target.shape, output.shape, error.shape)
                 # self.log_image(f"{key}/target", [target]) #.cpu().numpy().transpose(1,2,0)])
                 # self.log_image(f"{key}/reconstruction", [output])#.cpu().numpy().transpose(1,2,0)])
@@ -163,7 +172,9 @@ class MriModule(L.LightningModule):
                 ##* add mask display
                 # print('debug: ', mask.shape, target.shape, output.shape, error.shape)
                 alpha = 0.2
-                self.log_image(key, [ mask, sens_maps, img_zf**alpha,output**alpha, target**alpha,error], captions=[ 'mask','sens_maps','zf', 'reconstruction', 'target','error']) #.cpu().numpy().transpose(1,2,0)])
+                cpu_imgs = [t.detach().cpu() for t in (mask, sens_maps, img_zf**alpha, output**alpha, target**alpha, error)]
+                self.log_image(key, cpu_imgs, captions=['mask','sens_maps','zf','reconstruction','target','error'])
+                # self.log_image(key, [ mask, sens_maps, img_zf**alpha,output**alpha, target**alpha,error], captions=[ 'mask','sens_maps','zf', 'reconstruction', 'target','error']) #.cpu().numpy().transpose(1,2,0)])
 
                 # print('debug: ', len(self.validation_step_outputs), target.device, target.shape)
 
@@ -303,9 +314,11 @@ class MriModule(L.LightningModule):
             torch.tensor(len(losses), dtype=torch.float)
         )
 
-        self.log("validation_loss", val_loss / tot_slice_examples, prog_bar=True, sync_dist=True)
+        # detach & move to CPU, then .item() to get a Python float  
+        self.log("validation_loss", (val_loss / tot_slice_examples).detach().cpu().item(), prog_bar=True, sync_dist=True)
+
         for metric, value in metrics.items():
-            self.log(f"val_metrics/{metric}", value / tot_examples, sync_dist=True)
+            self.log(f"val_metrics/{metric}", (value / tot_examples).detach().cpu().item(), sync_dist=True)
 
         # print('debug epoch end: ', len(self.validation_step_outputs), metrics["ssim"]/tot_examples, tot_examples)
         self.validation_step_outputs.clear()

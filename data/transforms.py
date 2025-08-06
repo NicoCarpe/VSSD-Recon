@@ -4,10 +4,12 @@ import os
 import re
 import numpy as np
 import torch
+import zlib
 
 from data.subsample import MaskFunc
 from mri_utils import fft2c, ifft2c, rss_complex, complex_abs
 from data.subsample import CmrxRecon24MaskFunc, PoissonDiscMaskFunc
+
 def to_tensor(data: np.ndarray) -> torch.Tensor:
     """
     Convert numpy array to PyTorch tensor.
@@ -58,7 +60,7 @@ def apply_mask(
     shape = (1,) * len(data.shape[:-3]) + tuple(data.shape[-3:])
     if isinstance(mask_func, CmrxRecon24MaskFunc):
         if num_t is not None:
-            mask, num_low_frequencies, mask_type, acc = mask_func(shape, offset, seed, slice_idx,num_t,num_slc)
+            mask, num_low_frequencies, mask_type, acc = mask_func(shape, offset, seed, slice_idx, num_t, num_slc)
         else:
             mask, num_low_frequencies, mask_type, acc = mask_func(shape, offset, seed)
     else:
@@ -73,7 +75,7 @@ def apply_mask(
     
     if mask.shape[0]!=1: # repeat for coil [cmr24 data]
         mask = mask.repeat_interleave(data.shape[0]//mask.shape[0], dim=0)
-    
+
     masked_data = data * mask + 0.0  # the + 0.0 removes the sign of the zeros
 
     return masked_data, mask, num_low_frequencies, mask_type, acc
@@ -280,8 +282,24 @@ class PromptMRSample(NamedTuple):
     mask_type: str
     num_t: int
     num_slc: int
-    attrs: Dict
+    # attrs: Dict
     
+    # Try to keep all in tensor form to avoid shared memory accumulation issue: 
+    #     https://github.com/Lightning-AI/pytorch-lightning/issues/2352
+
+    # masked_kspace:      torch.Tensor   # (B, Nc, H, W, 2)
+    # mask:               torch.Tensor   # (B, 1, H, W, 1)
+    # num_low_frequencies:torch.Tensor   # 0-d tensor
+    # target:             torch.Tensor   # (B, 1, H, W)
+    # fname_key:          torch.Tensor   # 0-d int64 hash
+    # slice_num:          torch.Tensor   # 0-d int64
+    # max_value:          torch.Tensor   # 0-d float32
+    # crop_size:          torch.Tensor   # 1-d int64 tensor of length 2
+    # mask_type:          torch.Tensor   # 0-d int64 (0/1/2)
+    # num_t:              torch.Tensor   # 0-d int64
+    # num_slc:            torch.Tensor   # 0-d int64
+
+
 class CmrxReconDataTransform:
     """
     CmrxRecon23&24&25 Data Transformer for training
@@ -387,10 +405,13 @@ class CmrxReconDataTransform:
 
             if 'uniform' in raw:
                 mask_type = 'uniform'
+                # mask_type = 0
             elif 'radial' in raw:
                 mask_type = 'kt_radial'
+                # mask_type = 1
             elif 'random' in raw or 'gaussian' in raw:
                 mask_type = 'kt_random'
+                # mask_type = 2
             else:
                 raise ValueError(f"Unrecognized mask keyword '{raw}' in filename: {stem}")
 
@@ -410,9 +431,9 @@ class CmrxReconDataTransform:
             num_low_frequencies = self.num_low_frequencies
         
         # add additional information to attrs        
-        attrs["SliceIndex"] = slice_num
-        attrs["MaskType"] = mask_type
-        attrs["Acceleration"] = acc
+        # attrs["SliceIndex"] = slice_num
+        # attrs["MaskType"] = mask_type
+        # attrs["Acceleration"] = acc
 
         sample = PromptMRSample(
             masked_kspace=masked_kspace,
@@ -426,11 +447,31 @@ class CmrxReconDataTransform:
             mask_type=mask_type,
             num_t=num_t,
             num_slc=num_slc,
-            attrs=attrs,
+            # attrs=attrs,
         )
 
         return sample
+        
+        # # compute a stable hash code
+        # hash_code = zlib.crc32(fname.encode("utf-8"))                # → Python int in [0,2**32)
+        # # pack into your sample as a one‐element LongTensor
+        # fname_key = torch.tensor(hash_code, dtype=torch.int64)
 
+        # crop_size_tensor = torch.tensor(crop_size, dtype=torch.int64)
+
+        # return PromptMRSample(
+        #     masked_kspace=       masked_kspace,
+        #     mask=                mask_torch.bool(),
+        #     num_low_frequencies= torch.tensor(num_low_frequencies, dtype=torch.int64),
+        #     target=              target_torch,
+        #     fname=               torch.tensor(fname_key, dtype=torch.int64),
+        #     slice_num=           torch.tensor(slice_num, dtype=torch.int64),
+        #     max_value=           torch.tensor(max_value, dtype=torch.float32),
+        #     crop_size=           torch.tensor(crop_size, dtype=torch.int64),
+        #     mask_type=           torch.tensor(mask_type, dtype=torch.int64),
+        #     num_t=               torch.tensor(num_t, dtype=torch.int64),
+        #     num_slc=             torch.tensor(num_slc, dtype=torch.int64),
+        # )
 
 class FastmriDataTransform:
     """

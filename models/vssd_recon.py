@@ -1,33 +1,27 @@
-"""
-This file contains one implementation of the PromptMR+ model
-"""
 import math
+import copy
 from typing import List, Optional, Tuple, Union, Any
 import json
 import torch
 from torch import nn
 import torch.nn.functional as F
 from einops import rearrange
+from fvcore.nn import FlopCountAnalysis, flop_count_str, flop_count, parameter_count
 from mri_utils import ifft2c, rss, complex_abs, rss_complex, sens_expand, sens_reduce
 
-try:
-    from .utils_mamba import KspaceACSExtractor, DownBlock, UpBlock, SkipBlock, PromptBlock, PatchEmbed, FinalProjection
-except:
-    from  utils_mamba import KspaceACSExtractor, DownBlock, UpBlock, SkipBlock, PromptBlock, PatchEmbed, FinalProjection
-
-try:
-    from .VSSBlock import VSSBlock
-    # from .VSSBlockv2 import VSSBlock
-except:
-    from VSSBlock import VSSBlock
-    # from VSSBlockv2 import VSSBlock
+from .utils_mamba import KspaceACSExtractor, DownBlock, UpBlock, SkipBlock, PatchEmbed, FinalProjection
+#from .VSSBlock import VSSBlock
+from .VSSDBlock import VSSDBlock
 
 
 class PromptUnet(nn.Module): 
     def __init__(self,
                  in_chans: int,
                  out_chans: int,
+                 patch_size: int,
                  n_feat0: int,
+                 d_state: int,
+                 num_heads: List[int],
                  feature_dim: List[int],
                  prompt_dim: List[int],
                  len_prompt: List[int],
@@ -36,14 +30,13 @@ class PromptUnet(nn.Module):
                  n_dec_cab: List[int],
                  n_skip_cab: List[int],
                  n_bottleneck_cab: int,
-                 bias=False,
-                 learnable_prompt=False,
-                 adaptive_input=False,
-                 d_state=16,
-                 headdim=96,
-                 dropout=0,
-                 n_buffer=0,
-                 n_history=0,
+                 learnable_prompt: bool,
+                 adaptive_input: bool,
+                 n_buffer: int,
+                 n_history: int,
+                 dropout: float,
+                 bias = False,
+                 **kwargs
                  ):
         super().__init__()
         self.feature_dim = feature_dim
@@ -54,43 +47,39 @@ class PromptUnet(nn.Module):
         out_chans = out_chans * (1+self.n_buffer) if adaptive_input else out_chans 
         
         # Patch Embedding
-        self.patch_embed = PatchEmbed(patch_size=4, in_chans=in_chans, embed_dim=n_feat0)
+        self.patch_embed = PatchEmbed(patch_size=patch_size, in_chans=in_chans, embed_dim=n_feat0)
         
         # Encoder - 3 DownBlocks
-        self.enc_level1 = DownBlock(n_feat0, d_state, n_enc_cab[0], headdim, bias, dropout)
-        self.enc_level2 = DownBlock(feature_dim[0], d_state, n_enc_cab[1], headdim, bias, dropout)
-        self.enc_level3 = DownBlock(feature_dim[1], d_state, n_enc_cab[2], headdim,  bias, dropout)
+        self.enc_level1 = DownBlock(n_feat0, d_state, n_enc_cab[0], num_heads[0], dropout, **kwargs)
+        self.enc_level2 = DownBlock(feature_dim[0], d_state, n_enc_cab[1], num_heads[1], dropout, **kwargs)
+        self.enc_level3 = DownBlock(feature_dim[1], d_state, n_enc_cab[2], num_heads[2],  dropout, **kwargs)
 
         # Skip Connections - 3 SkipBlocks
-        self.skip_attn1 = SkipBlock(n_feat0, d_state, n_skip_cab[0], headdim, bias, dropout)
-        self.skip_attn2 = SkipBlock(feature_dim[0], d_state, n_skip_cab[1], headdim, bias, dropout)
-        self.skip_attn3 = SkipBlock(feature_dim[1], d_state, n_skip_cab[2], headdim, bias, dropout)
+        self.skip_attn1 = SkipBlock(n_feat0, d_state, n_skip_cab[0], num_heads[0], dropout, **kwargs)
+        self.skip_attn2 = SkipBlock(feature_dim[0], d_state, n_skip_cab[1], num_heads[1], dropout, **kwargs)
+        self.skip_attn3 = SkipBlock(feature_dim[1], d_state, n_skip_cab[2], num_heads[2], dropout, **kwargs)
 
         # Bottleneck 
         self.bottleneck = nn.Sequential(*[
-            VSSBlock(
-                hidden_dim = feature_dim[2],
+            VSSDBlock(
+                dim = feature_dim[2],
                 d_state = d_state,
-                headdim = headdim,
-                drop_path = dropout,
-                bias = bias
+                num_heads = num_heads[3],
+                drop = dropout,
+                attn_type='standard',
+                **kwargs
             ) for _ in range(n_bottleneck_cab)
         ])
 
         # Decoder - 3 UpBlocks
-        self.prompt_level3 = PromptBlock(prompt_dim[2], len_prompt[2], prompt_size[2], feature_dim[2], learnable_prompt)
-        self.dec_level3 = UpBlock(feature_dim[2], d_state, prompt_dim[2], n_dec_cab[2], headdim, bias, dropout, n_history)
-
-        self.prompt_level2 = PromptBlock(prompt_dim[1], len_prompt[1], prompt_size[1], feature_dim[1], learnable_prompt)
-        self.dec_level2 = UpBlock(feature_dim[1], d_state, prompt_dim[1], n_dec_cab[1], headdim, bias, dropout, n_history)
-
-        self.prompt_level1 = PromptBlock(prompt_dim[0], len_prompt[0], prompt_size[0], feature_dim[0], learnable_prompt)
-        self.dec_level1 = UpBlock(feature_dim[0], d_state, prompt_dim[0], n_dec_cab[0], headdim, bias, dropout, n_history)
+        self.dec_level3 = UpBlock(feature_dim[2], d_state, n_dec_cab[2], num_heads[2], bias, dropout, n_history, **kwargs)
+        self.dec_level2 = UpBlock(feature_dim[1], d_state, n_dec_cab[1], num_heads[1], bias, dropout, n_history, **kwargs)
+        self.dec_level1 = UpBlock(feature_dim[0], d_state, n_dec_cab[0], num_heads[0], bias, dropout, n_history, **kwargs)
 
         # OutConv
         self.final_proj = FinalProjection(n_feat0, out_chans)
 
-    def forward(self, x: torch.Tensor, meta_emb: torch.Tensor, history_feat: Optional[List[torch.Tensor]] = None):
+    def forward(self, x: torch.Tensor, history_feat: Optional[List[torch.Tensor]] = None):
         """
         Forward pass of PromptUnet.
 
@@ -125,18 +114,15 @@ class PromptUnet(nn.Module):
 
         # 3. decoder
         current_feat.append(x.clone())
-        dec_prompt3 = self.prompt_level3(x, meta_emb)  # (B, prompt_dim[2], H'/8, W'/8)
-        x = self.dec_level3(x, dec_prompt3, self.skip_attn3(enc3), history_feat3)
+        x = self.dec_level3(x, self.skip_attn3(enc3), history_feat3)
         # x out: (B, D2, H'/4, W'/4)
 
         current_feat.append(x.clone())
-        dec_prompt2 = self.prompt_level2(x, meta_emb)  # (B, prompt_dim[1], H'/4, W'/4)
-        x = self.dec_level2(x, dec_prompt2, self.skip_attn2(enc2), history_feat2)
+        x = self.dec_level2(x, self.skip_attn2(enc2), history_feat2)
         # x out: (B, D1, H'/2, W'/2)
 
         current_feat.append(x.clone())
-        dec_prompt1 = self.prompt_level1(x, meta_emb)  # (B, prompt_dim[0], H'/2, W'/2)
-        x = self.dec_level1(x, dec_prompt1, self.skip_attn1(enc1), history_feat1)
+        x = self.dec_level1(x, self.skip_attn1(enc1), history_feat1)
         # x out: (B, n_feat0, H', W')
 
         # 4. final projection
@@ -160,7 +146,10 @@ class NormPromptUnet(nn.Module):
         self,
         in_chans: int,
         out_chans: int,
+        patch_size: int,
         n_feat0: int,
+        d_state: int,
+        num_heads: List[int],
         feature_dim: List[int],
         prompt_dim: List[int],
         len_prompt: List[int],
@@ -169,11 +158,12 @@ class NormPromptUnet(nn.Module):
         n_dec_cab: List[int],
         n_skip_cab: List[int],
         n_bottleneck_cab: int,
-        learnable_prompt=False,
-        adaptive_input=False,
-        headdim=96,
-        n_buffer=0,
-        n_history=0,
+        learnable_prompt: bool=False,
+        adaptive_input: bool=False,
+        n_buffer: int=0,
+        n_history: int=0,
+        dropout: float=0.,
+        **kwargs
     ):
 
         super().__init__()
@@ -181,7 +171,10 @@ class NormPromptUnet(nn.Module):
         self.n_buffer = n_buffer
         self.unet = PromptUnet(in_chans=in_chans,
                                out_chans=out_chans,
+                               patch_size=patch_size,
                                n_feat0=n_feat0,
+                               d_state=d_state,
+                               num_heads=num_heads,
                                feature_dim=feature_dim,
                                prompt_dim=prompt_dim,
                                len_prompt=len_prompt,
@@ -192,9 +185,10 @@ class NormPromptUnet(nn.Module):
                                n_bottleneck_cab=n_bottleneck_cab,
                                learnable_prompt = learnable_prompt,
                                adaptive_input=adaptive_input,
-                               headdim=headdim,
                                n_buffer = n_buffer,
                                n_history= n_history,
+                               dropout=dropout,
+                               **kwargs
                                )
 
     def complex_to_chan_dim(self, x: torch.Tensor) -> torch.Tensor:
@@ -242,7 +236,6 @@ class NormPromptUnet(nn.Module):
         return x[..., h_pad[0]: h_mult - h_pad[1], w_pad[0]: w_mult - w_pad[1]]
 
     def forward(self, x: torch.Tensor,
-                meta_emb: torch.Tensor, 
                 history_feat: Optional[Tuple[torch.Tensor, torch.Tensor, torch.Tensor]] = None,
                 buffer: torch.Tensor = None):
         """
@@ -272,7 +265,7 @@ class NormPromptUnet(nn.Module):
         # normalize, pad, unet, unpad, unnorm back
         x, mean, std = self.norm(x)
         x, pad_sizes = self.pad(x)
-        x, history_feat = self.unet(x, meta_emb, history_feat)
+        x, history_feat = self.unet(x, history_feat)
         x = self.unpad(x, *pad_sizes)
         x = self.unnorm(x, mean, std)
         x = self.chan_complex_to_last_dim(x)
@@ -302,7 +295,6 @@ class PromptMRBlock(nn.Module):
         ref_kspace: torch.Tensor,
         mask: torch.Tensor,
         sens_maps: torch.Tensor,
-        meta_emb: torch.Tensor,
         history_feat: Optional[Tuple[torch.Tensor, ...]] = None,
         buffer: Optional[torch.Tensor] = None,
     ):
@@ -327,7 +319,7 @@ class PromptMRBlock(nn.Module):
         soft_dc = torch.where(mask, current_kspace - ref_kspace, zero) * self.dc_weight
         pred, latent, history_feat = self.model(
             sens_reduce(current_kspace, sens_maps, self.num_adj_slices),
-            meta_emb, history_feat, buffer)
+            history_feat, buffer)
         model_term = sens_expand(pred, sens_maps, self.num_adj_slices)
         updated = current_kspace - soft_dc - model_term
         return updated, latent, history_feat
@@ -338,7 +330,10 @@ class PromptMR(nn.Module):
         self,
         num_cascades: int,
         num_adj_slices: int,
+        patch_size: int,
         n_feat0: int,
+        d_state: int,
+        num_heads: List[int],
         feature_dim: List[int],
         prompt_dim: List[int],
         sens_n_feat0: int,
@@ -361,11 +356,11 @@ class PromptMR(nn.Module):
         mask_center: bool = True,
         learnable_prompt: bool = False,
         adaptive_input: bool = False,
-        n_buffer: int = 4,
+        n_buffer: int = 0,
         n_history: int = 0,
         use_sens_adj: bool = True,
-        meta_dim: int = 32,
-        meta_stats_path: str = "/home/nicocarp/scratch/VSSD-Recon/configs/meta_stats.json"
+        dropout: float = 0.,
+        **kwargs
     ):
 
         super().__init__()
@@ -376,7 +371,10 @@ class PromptMR(nn.Module):
         self.n_buffer = n_buffer
         self.sens_net = SensitivityModel(
             num_adj_slices=num_adj_slices,
+            patch_size=patch_size,
             n_feat0=sens_n_feat0,
+            d_state=d_state,
+            num_heads=num_heads,
             feature_dim=sens_feature_dim,
             prompt_dim=sens_prompt_dim,
             len_prompt=sens_len_prompt if sens_len_prompt is not None else len_prompt,
@@ -387,7 +385,9 @@ class PromptMR(nn.Module):
             n_bottleneck_cab=sens_n_bottleneck_cab if sens_n_bottleneck_cab is not None else n_bottleneck_cab,
             mask_center=mask_center,
             learnable_prompt = learnable_prompt,
-            use_sens_adj = use_sens_adj
+            use_sens_adj = use_sens_adj,
+            dropout = dropout,
+            **kwargs
         )
         # DC + denoiser in each cascade
         self.cascades = nn.ModuleList([
@@ -395,7 +395,10 @@ class PromptMR(nn.Module):
                 NormPromptUnet(
                     in_chans=2 * num_adj_slices,
                     out_chans=2 * num_adj_slices,
+                    patch_size=patch_size,
                     n_feat0=n_feat0,
+                    d_state=d_state,
+                    num_heads=num_heads,
                     feature_dim=feature_dim,
                     prompt_dim=prompt_dim,
                     len_prompt=len_prompt,
@@ -406,105 +409,72 @@ class PromptMR(nn.Module):
                     n_bottleneck_cab=n_bottleneck_cab,
                     learnable_prompt=learnable_prompt,
                     adaptive_input=adaptive_input,
-                    headdim=n_feat0,    # choose this so that headdim allways fits with the feature space
                     n_buffer = n_buffer,
-                    n_history=n_history
+                    n_history=n_history,
+                    dropout=dropout,
+                    **kwargs
+                    
                 ),
                 num_adj_slices=num_adj_slices
             ) for _ in range(num_cascades)
         ])
 
-        self.attr_keys = [
-            "FieldStrength(T)",
-            "FOVx(mm)",
-            "FOVy(mm)",
-            "ReconMatrix_X",
-            "ReconMatrix_Y",
-            "SliceNum",
-            "SliceThickness(mm)",
-            "CoilNumber",
-            "TemporalPhase",
-            "ReadOutOversample",
-            "TR(ms)",
-            "TE(ms)",
-            "TI(ms)",
-            "FlipAngle(degree)",
-            "SliceIndex",
-            "Acceleration",
-        ]
+    @torch.no_grad()
+    def flops(self, input_shape=(1, 30, 256, 512, 2), ):
 
-        # accept variants
-        self._aliases = {
-            "TR(ms)":            ["TR(ms)", "TR"],
-            "TE(ms)":            ["TE(ms)", "TE"],
-            "TI(ms)":            ["TI(ms)", "TI"],
-            "FlipAngle(degree)": ["FlipAngle(degree)", "FlipAngle"],
+        supported_ops = {
+            "aten::silu": None, 
+            "aten::neg": None,
+            "aten::exp": None,  
+            "aten::flip": None,
+            "mamba_chunk_scan_combined": None,
+            "mamba_split_conv1d_scan_combined": None,
+            "selective_state_update": None,
         }
+        
 
-        # 3) load your JSON stats
-        with open(meta_stats_path, "r") as f:
-            self.meta_stats = json.load(f)
+        model = copy.deepcopy(self)
+        model.cuda().eval()
 
-        # build encoder on len(attr_keys)+1 (for mask-flag)
-        self.meta_encoder = nn.Sequential(
-            nn.Linear(len(self.attr_keys) + 1, meta_dim),
-            nn.ReLU(),
-            nn.Linear(meta_dim, meta_dim),
-        )
+        B, C, H, W, two = input_shape
 
+        kspace = torch.zeros((input_shape), device=next(model.parameters()).device)
+        mask = torch.ones((B, 1, H, W, 1), dtype=torch.bool, device=kspace.device)
+        nlf = 20
 
-    def _build_meta_emb(self, attrs, mask_type, B, device):
-        meta_list = []
-        for key in self.attr_keys:
-            if key == "SliceIndex":
-                idx = attrs.get("SliceIndex")
-                num = attrs.get("SliceNum")
-                v = idx.float() / num.float() if idx is not None and num is not None \
-                    else torch.zeros(B, device=device)
+        # # run flop count
+        # try:
+        #     Gflops, unsupported = flop_count(model=model, inputs=(kspace, mask, nlf,), supported_ops=supported_ops)
+        # except Exception as e:
+        #     print("FLOP count error:", e)
+        #     return 1e9
 
-            elif key == "Acceleration":
-                acc = attrs.get("Acceleration")
-                v = acc.float() / 24.0 if acc is not None else torch.zeros(B, device=device)
+        # return sum(Gflops.values()) * 1e9
+    
+        # Build the analysis (won’t throw)
+        analysis = FlopCountAnalysis(model, (kspace, mask, nlf,), supported_ops=supported_ops)
 
-            else:
-                # alias‐lookup if you have variants (e.g. "TR", "TR(ms)")
-                variants = self._aliases.get(key, [key])
-                raw = None
-                for name in variants:
-                    raw = attrs.get(name)
-                    if raw is not None:
-                        break
+        # Print unsupported ops
+        unsupported = analysis.unsupported_ops()
+        if unsupported:
+            print(f"Unsupported operators ({len(unsupported)}):")
+            for op in unsupported:
+                print("  ", op)
 
-                stats = self.meta_stats[key]
-                mean, std = stats["mean"], stats["std"]
+        # Sum up all the flops we *did* count
+        total_flops = sum(analysis.by_operator().values())
 
-                if raw is None:
-                    # missing → pretend the value was the mean
-                    v_raw = torch.full((B,), mean, device=device, dtype=torch.float32)
-                else:
-                    v_raw = raw.float()
+        return total_flops
 
-                # normalize (mean→0), and wipe out any NaNs
-                v = (v_raw - mean) / std
-                v = torch.where(torch.isnan(v), torch.zeros_like(v), v)
-
-            meta_list.append(v)
-
-        # finally add mask_type flag
-        flag = 0.0 if mask_type[0] == "cartesian" else 1.0
-        meta_list.append(torch.full((B,), flag, device=device, dtype=torch.float32))
-
-        meta_tensor = torch.stack(meta_list, dim=1)     # (B, num_attrs+1)
-        return self.meta_encoder(meta_tensor)           # (B, meta_dim)
+    
 
     def forward(
         self,
         masked_kspace: torch.Tensor,
         mask: torch.Tensor,
         num_low_frequencies: torch.Tensor,
-        attrs: dict[str, Any],
         mask_type: Tuple[str] = ("cartesian",),
-        use_checkpoint: bool = True,
+        use_checkpoint: bool = False,
         compute_sens_per_coil: bool = False,
     ) -> dict:
         """
@@ -520,6 +490,7 @@ class PromptMR(nn.Module):
 
         Returns:
             dict with:
+             - 'kspace_pred': (B, C, H, W, 2) multicoil kspace prediction
              - 'img_pred': (B, 1, H, W) reconstructed image
              - 'img_zf': (B, 1, H, W) zero-filled image
              - 'sens_maps': (B, H, W) complex sensitivity map
@@ -528,15 +499,11 @@ class PromptMR(nn.Module):
         B = masked_kspace.shape[0]
         device = masked_kspace.device
 
-        # build & normalize meta_emb in one shot
-        meta_emb = self._build_meta_emb(attrs, mask_type, B, device)
-
         if use_checkpoint:
             sens_maps = torch.utils.checkpoint.checkpoint(
                 self.sens_net,
                 masked_kspace,
                 mask,
-                meta_emb,
                 num_low_frequencies,
                 mask_type,
                 compute_per_coil=compute_sens_per_coil,
@@ -545,7 +512,6 @@ class PromptMR(nn.Module):
             sens_maps = self.sens_net(
                 masked_kspace,
                 mask,
-                meta_emb,
                 num_low_frequencies,
                 mask_type,
                 compute_per_coil=compute_sens_per_coil)
@@ -565,7 +531,6 @@ class PromptMR(nn.Module):
                     masked_kspace, 
                     mask, 
                     sens_maps, 
-                    meta_emb, 
                     history_feat, 
                     buffer, 
                     use_reentrant=False
@@ -576,7 +541,6 @@ class PromptMR(nn.Module):
                     masked_kspace, 
                     mask, 
                     sens_maps, 
-                    meta_emb, 
                     history_feat, 
                     buffer
                 )
@@ -608,19 +572,24 @@ class SensitivityModel(nn.Module):
 
     def __init__(
         self,
-        num_adj_slices: int = 5,
-        n_feat0: int = 24,
-        feature_dim: List[int] = [36, 48, 60],
-        prompt_dim: List[int] = [12, 24, 36],
-        len_prompt: List[int] = [5, 5, 5],
-        prompt_size: List[int] = [64, 32, 16],
-        n_enc_cab: List[int] = [2, 3, 3],
-        n_dec_cab: List[int] = [2, 2, 3],
-        n_skip_cab: List[int] = [1, 1, 1],
-        n_bottleneck_cab: int = 3,
-        mask_center: bool = True,
-        learnable_prompt = False,
-        use_sens_adj: bool = True,
+        num_adj_slices: int,
+        patch_size: int,
+        n_feat0: int,
+        d_state: int,
+        num_heads: List[int],
+        feature_dim: List[int],
+        prompt_dim: List[int],
+        len_prompt: List[int],
+        prompt_size: List[int],
+        n_enc_cab: List[int],
+        n_dec_cab: List[int],
+        n_skip_cab: List[int],
+        n_bottleneck_cab: int,
+        mask_center: bool,
+        learnable_prompt: bool,
+        use_sens_adj: bool,
+        dropout: float,
+        **kwargs
     ):
 
         super().__init__()
@@ -629,7 +598,10 @@ class SensitivityModel(nn.Module):
         self.use_sens_adj = use_sens_adj
         self.norm_unet = NormPromptUnet(in_chans=2*self.num_adj_slices if use_sens_adj else 2,
                                         out_chans=2*self.num_adj_slices if use_sens_adj else 2,
+                                        patch_size=patch_size,   
                                         n_feat0=n_feat0,
+                                        d_state=d_state,
+                                        num_heads=num_heads,
                                         feature_dim=feature_dim,
                                         prompt_dim=prompt_dim,
                                         len_prompt=len_prompt,
@@ -639,7 +611,8 @@ class SensitivityModel(nn.Module):
                                         n_skip_cab=n_skip_cab,
                                         n_bottleneck_cab=n_bottleneck_cab,
                                         learnable_prompt = learnable_prompt,
-                                        headdim=n_feat0,    # choose this so that headdim allways fits with the feature space
+                                        dropout = dropout,
+                                        **kwargs
                                         )
         self.kspace_acs_extractor = KspaceACSExtractor(mask_center)
         
@@ -673,31 +646,21 @@ class SensitivityModel(nn.Module):
         return x.view(b, adj_coil, h, w, two)
 
 
-    def compute_sens(self, model:nn.Module, images: torch.Tensor, compute_per_coil: bool, meta_emb: torch.Tensor) -> torch.Tensor:
+    def compute_sens(self, model:nn.Module, images: torch.Tensor, compute_per_coil: bool) -> torch.Tensor:
         bc = images.shape[0] # batch_size * n_coils
-        B, meta_dim = meta_emb.shape  # batch_size, meta_dim
-        coil = bc // B  # n_coils
-
-        # 1) expand meta_emb to match the "flattened" batch:
-        #    (B, meta_dim) -> (B, coil, meta_dim) -> (B*coil, meta_dim)
-        meta_exp = meta_emb.unsqueeze(1)           # (B, 1, meta_dim)
-        meta_exp = meta_exp.repeat(1, coil, 1)     # (B, coil, meta_dim)
-        meta_exp = meta_exp.view(bc, meta_dim)     # (B*coil, meta_dim)
-
         if compute_per_coil:
             output = []
             for i in range(bc):
-                output.append(model(images[i].unsqueeze(0), meta_emb=meta_exp[i].unsqueeze(0))[0])
+                output.append(model(images[i].unsqueeze(0))[0])
             output = torch.cat(output, dim=0)
         else:
-            output = model(images, meta_emb=meta_exp)[0]
+            output = model(images)[0]
         return output
         
     def forward(
         self,
         masked_kspace: torch.Tensor,
         mask: torch.Tensor,
-        meta_emb: torch.Tensor,
         num_low_frequencies: Optional[Union[int, torch.Tensor]] = None,
         mask_type: Tuple[str] = ("cartesian",),
         compute_per_coil: bool = False,
@@ -721,99 +684,5 @@ class SensitivityModel(nn.Module):
         images, batches = self.chans_to_batch_dim(ifft2c(masked_kspace_acs))
 
         return self.divide_root_sum_of_squares(
-            self.batch_chans_to_chan_dim(self.compute_sens(self.norm_unet, images, compute_per_coil, meta_emb), batches)
+            self.batch_chans_to_chan_dim(self.compute_sens(self.norm_unet, images, compute_per_coil), batches)
         )
-
-
-
-def count_parameters(model: torch.nn.Module) -> int:
-    return sum(p.numel() for p in model.parameters() if p.requires_grad)
-
-
-def main():
-    import time
-    import torch
-
-    # --- config (match your YAML defaults) ---
-    batch_size       = 1
-    num_cascades     = 12
-    num_adj_slices   = 5
-    n_feat0          = 96
-    feature_dim      = [192, 384, 768]
-    prompt_dim       = [96, 192, 384]
-    sens_n_feat0     = 48
-    sens_feature_dim = [96, 192, 384]
-    sens_prompt_dim  = [48, 96, 192]
-    len_prompt       = [5, 5, 5]
-    prompt_size      = [64, 32, 16]
-    n_enc_cab        = [2, 2, 3]
-    n_dec_cab        = [2, 2, 3]
-    n_skip_cab       = [1, 1, 1]
-    n_bottleneck_cab = 3
-    learnable_prompt = False
-    adaptive_input   = False
-    n_buffer         = 0
-    n_history        = 0
-    use_sens_adj     = True
-    height, width    = 512, 256
-
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"Using device: {device}")
-
-    # instantiate
-    model = PromptMR(
-        num_cascades=num_cascades,
-        num_adj_slices=num_adj_slices,
-        n_feat0=n_feat0,
-        feature_dim=feature_dim,
-        prompt_dim=prompt_dim,
-        sens_n_feat0=sens_n_feat0,
-        sens_feature_dim=sens_feature_dim,
-        sens_prompt_dim=sens_prompt_dim,
-        len_prompt=len_prompt,
-        prompt_size=prompt_size,
-        n_enc_cab=n_enc_cab,
-        n_dec_cab=n_dec_cab,
-        n_skip_cab=n_skip_cab,
-        n_bottleneck_cab=n_bottleneck_cab,
-        learnable_prompt=learnable_prompt,
-        adaptive_input=adaptive_input,
-        n_buffer=n_buffer,
-        n_history=n_history,
-        use_sens_adj=use_sens_adj
-    ).to(device)
-
-    # count params
-    total_params = count_parameters(model)
-    print(f"Total parameters: {total_params:,} (~{total_params*4/1024**2:.2f} MB)")
-
-    # dummy inputs
-    nc = num_adj_slices * 10  # coil images
-    dummy_kspace = torch.randn(batch_size, nc, height, width, 2, device=device)
-    dummy_mask   = torch.ones(batch_size, 1, height, width, 1, dtype=torch.bool, device=device)
-    dummy_nlf    = torch.tensor([height // 4] * batch_size, device=device)
-
-    # warm-up
-    print("Warming up…")
-    for _ in range(5):
-        _ = model(dummy_kspace, dummy_mask, dummy_nlf)
-
-    # reset & measure
-    if device.type == "cuda":
-        torch.cuda.reset_peak_memory_stats(device)
-    iters = 20
-    torch.cuda.synchronize(device) if device.type=="cuda" else None
-    t0 = time.time()
-    for _ in range(iters):
-        _ = model(dummy_kspace, dummy_mask, dummy_nlf)
-    torch.cuda.synchronize(device) if device.type=="cuda" else None
-    t1 = time.time()
-
-    print(f"Ran {iters} iters in {t1-t0:.2f}s → {iters/(t1-t0):.1f} it/s")
-    if device.type == "cuda":
-        peak = torch.cuda.max_memory_allocated(device)/1024**2
-        print(f"Peak GPU memory: {peak:.1f} MB")
-
-
-if __name__ == "__main__":
-    main()

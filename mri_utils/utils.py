@@ -171,24 +171,27 @@ def load_mask(filename):
 def load_kdata(filename):
     """
     load kdata from .mat file (v7.3 or legacy v7)
-    return shape: [t,nz,nc,ny,nx]
+    return shape: [t,nz,nc,ny,nx,2]
+
+    -----------------------------------------------------------------------------
+    NOTE ON MATLAB↔PYTHON HDF5 DIMENSION ORDERING
+
+    • MATLAB uses column-major (Fortran-order): let shape be (nx, ny, nc, cz, t)
+    • Python/NumPy uses row-major (C-order): when you load an HDF5 dataset
+      written by MATLAB, Python will reverse the axes in memory, so
+      MATLAB's (nx, ny, nc, cz, t) → Python sees (t, nz, nc, cy, nx)
+    -----------------------------------------------------------------------------
     """
     data = loadmat(filename)
     key  = next(iter(data))
     arr  = data[key]
 
-    # legacy MAT stored a native complex array
+    # legacy MAT: already stored in a native complex array
     if isinstance(arr, np.ndarray) and np.iscomplexobj(arr):
         return arr
-
-    # If it's a numpy structured array (from scipy.loadmat with struct_as_record=False)
-    if hasattr(arr, 'dtype') and arr.dtype.names is not None:
-        # dtype.names might be ('real','imag')
-        return arr['real'] + 1j*arr['imag']
-
-    # v7.3 HDF5 or struct‐based fallback: dict or recarray
-    # If it's a simple dict (from our loadmat_group for HDF5)
-    if isinstance(arr, dict):
+        
+    # v7.3 MAT: real and imag stored in seperate keys
+    else:
         return arr['real'] + 1j*arr['imag']
 
     raise RuntimeError(f"Unexpected kdata format for {filename}: got type {type(arr)}")

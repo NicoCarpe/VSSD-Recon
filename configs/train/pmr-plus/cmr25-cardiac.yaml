@@ -2,7 +2,7 @@ data:
   class_path: pl_modules.DataModule
   init_args:
     slice_dataset: data.CmrxReconSliceDataset
-    data_path: /home/nicocarp/scratch/PromptUMamba/mridatasets/cmrxrecon2025
+    data_path: /home/nicocarp/scratch/VSSD-Recon/mridatasets/cmrxrecon2025
     challenge: multicoil
     sample_rate: 0.2
     val_sample_rate: 0.2
@@ -22,7 +22,7 @@ data:
             num_low_frequencies: 
             - 20
             num_adj_slices: &num_adj_slices 3
-            mask_path: /home/nicocarp/scratch/PromptUMamba/mridatasets/cmrxrecon2025/mask/mask_radial.h5
+            mask_path: /home/nicocarp/scratch/VSSD-Recon/mridatasets/cmrxrecon2025/mask/mask_radial.h5
         uniform_resolution: null
         use_seed: false
     val_transform:
@@ -34,7 +34,7 @@ data:
             num_low_frequencies: 
             - 20
             num_adj_slices: *num_adj_slices
-            mask_path: /home/nicocarp/scratch/PromptUMamba/mridatasets/cmrxrecon2025/mask/mask_radial.h5
+            mask_path: /home/nicocarp/scratch/VSSD-Recon/mridatasets/cmrxrecon2025/mask/mask_radial.h5
         uniform_resolution: null
         use_seed: True
     combine_train_val: false

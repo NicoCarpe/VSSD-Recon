@@ -10,23 +10,27 @@ function img4ranking = run4Ranking_2025(img,filetype)
 % img4ranking: "single" format images with dims (sx/3,sy/2,2,3) for ranking
 
 % check if it is BlackBlood/T1w/T2w (single-frame modalities)
-% note: inference does rss so images are real and coil combined
-% note: input shape differs slightly so permuatations are made
+
+% -----------------------------------------------------------------------------
+% NOTE ON PYTHON↔MATLAB HDF5 DIMENSION ORDERING
+%
+% • Python/NumPy uses row-major (C-order): shape = (T, Z, H, W)
+% • MATLAB uses column-major (Fortran-order): when you load an HDF5 dataset
+%   written by Python, MATLAB will reverse the axes in memory, so
+%     Python’s (T, Z, H, W) → MATLAB sees size(img) = [W, H, Z, T]
+% -----------------------------------------------------------------------------
+
 fprintf('>> run4Ranking_2025: file=”%s”, pre‑permute size = %s\n', ...
             filetype, mat2str(size(img)));
 
 isBlackBlood = 0;
 if contains(filetype,'blackblood') || contains(filetype,'T1w') || contains(filetype,'T2w')
-    % non‑temporal: [sz,sy,sx] → [sx,sy,sz]
-    img = permute(img, [3, 2, 1]);    
     [sx, sy, sz] = size(img);         
-    t = 1;
+    t = 1;    
+    isBlackBlood = 1;
 else
-    % temporal:     [t,sz,sy,sx] → [sx,sy,sz,t]
-    img = permute(img, [4, 3, 2, 1]);  
     [sx, sy, sz, t] = size(img);
 end
-
 
 % detect mapping modalities
 detectMap = {'T1map','T2map','T2smap','T1mappost'};
@@ -54,13 +58,14 @@ end
 
 % coil-combine via sum-of-squares
 % sosImg = squeeze(sos(img,3));
-% note: in our case image is already coil combined
-sosImg = img;
-
-% if single slice, ensure 4D shape
+%
+% % if single slice, ensure 4D shape
 % if sz == 1
 %     sosImg = reshape(sosImg,[size(sosImg,1),size(sosImg,2),1,size(sosImg,3)]);
 % end
+
+% note: inference does rss so images are real and coil combined already
+sosImg = img;
 
 % select and crop
 if isBlackBlood
@@ -80,5 +85,34 @@ else
         img4ranking = single(crop(abs(selectedImg),[round(sx/3),round(sy/2),length(sliceToUse)]));
     end
 end
+
+fprintf('>> run4Ranking_2025: file=”%s”, ranking image size = %s\n', ...
+            filetype, mat2str(size(img4ranking)));
+
+
+% -------------------------------------
+% QA: write out the first ranking image as a PNG
+qaDir = '/home/nicocarp/scratch/VSSD-Recon/predict/cmr25-cardiac/test_VSSD-Recon_R1/Submission_pngs';
+if ~exist(qaDir,'dir')
+    mkdir(qaDir);
+end
+
+% img4ranking is either:
+%   3-D: [sx/3, sy/2, #slices]           (static case)
+%   4-D: [sx/3, sy/2, #slices, #frames]  (cine/mapping)
+if ndims(img4ranking)==3
+    pngImg = img4ranking(:,:,1);
+else
+    pngImg = img4ranking(:,:,1,1);
+end
+
+% normalize to [0,1] and save
+pngImg = mat2gray(abs(pngImg));
+[~, base] = fileparts(filetype);
+outName = fullfile(qaDir, base + "_rank1.png");
+imwrite(pngImg, outName);
+fprintf("  → QA PNG saved: %s\n", outName);
+% -------------------------------------
+
 
 return
