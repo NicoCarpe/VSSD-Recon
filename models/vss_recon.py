@@ -9,8 +9,8 @@ from einops import rearrange
 from fvcore.nn import FlopCountAnalysis, flop_count_str, flop_count, parameter_count
 from mri_utils import ifft2c, rss, complex_abs, rss_complex, sens_expand, sens_reduce
 
-from .utils_VSSD import KspaceACSExtractor, DownBlock, UpBlock, SkipBlock, PatchEmbed, FinalProjection
-from .VSSDBlock import VSSDBlock
+from .utils_VSS import KspaceACSExtractor, DownBlock, UpBlock, SkipBlock, PatchEmbed, FinalProjection
+from .VSSBlock import VSSBlock
 
 
 class PromptUnet(nn.Module): 
@@ -60,12 +60,8 @@ class PromptUnet(nn.Module):
 
         # Bottleneck 
         self.bottleneck = nn.Sequential(*[
-            VSSDBlock(
+            VSSBlock(
                 dim = feature_dim[2],
-                d_state = d_state,
-                num_heads = num_heads[3],
-                drop = dropout,
-                attn_type='standard',
                 **kwargs
             ) for _ in range(n_bottleneck_cab)
         ])
@@ -168,30 +164,27 @@ class NormPromptUnet(nn.Module):
         super().__init__()
         self.n_history = n_history
         self.n_buffer = n_buffer
-  
         self.unet = PromptUnet(in_chans=in_chans,
-                            out_chans=out_chans,
-                            patch_size=patch_size,
-                            n_feat0=n_feat0,
-                            d_state=d_state,
-                            num_heads=num_heads,
-                            feature_dim=feature_dim,
-                            prompt_dim=prompt_dim,
-                            len_prompt=len_prompt,
-                            prompt_size=prompt_size,
-                            n_enc_cab=n_enc_cab,
-                            n_dec_cab=n_dec_cab,
-                            n_skip_cab=n_skip_cab,
-                            n_bottleneck_cab=n_bottleneck_cab,
-                            learnable_prompt = learnable_prompt,
-                            adaptive_input=adaptive_input,
-                            n_buffer = n_buffer,
-                            n_history= n_history,
-                            dropout=dropout,
-                            **kwargs
-                            )
-
-
+                               out_chans=out_chans,
+                               patch_size=patch_size,
+                               n_feat0=n_feat0,
+                               d_state=d_state,
+                               num_heads=num_heads,
+                               feature_dim=feature_dim,
+                               prompt_dim=prompt_dim,
+                               len_prompt=len_prompt,
+                               prompt_size=prompt_size,
+                               n_enc_cab=n_enc_cab,
+                               n_dec_cab=n_dec_cab,
+                               n_skip_cab=n_skip_cab,
+                               n_bottleneck_cab=n_bottleneck_cab,
+                               learnable_prompt = learnable_prompt,
+                               adaptive_input=adaptive_input,
+                               n_buffer = n_buffer,
+                               n_history= n_history,
+                               dropout=dropout,
+                               **kwargs
+                               )
 
     def complex_to_chan_dim(self, x: torch.Tensor) -> torch.Tensor:
         b, c, h, w, two = x.shape
@@ -267,9 +260,7 @@ class NormPromptUnet(nn.Module):
         # normalize, pad, unet, unpad, unnorm back
         x, mean, std = self.norm(x)
         x, pad_sizes = self.pad(x)
-        
         x, history_feat = self.unet(x, history_feat)
-
         x = self.unpad(x, *pad_sizes)
         x = self.unnorm(x, mean, std)
         x = self.chan_complex_to_last_dim(x)
@@ -528,6 +519,7 @@ class PromptMR(nn.Module):
         
         for ith,cascade in enumerate(self.cascades):
             is_last = ith == self.num_cascades - 1
+            # print(f"###################  {ith}  #######################")
             if use_checkpoint and self.training:
                 kspace_pred, latent, history_feat  = torch.utils.checkpoint.checkpoint(
                     cascade, 

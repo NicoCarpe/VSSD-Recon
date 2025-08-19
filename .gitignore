@@ -7,6 +7,5 @@
 /scripts/slurm_logs/
 /scripts/exp/
 /pretrained_models/
-
-
+/predict/
 .env

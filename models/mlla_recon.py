@@ -10,7 +10,8 @@ from fvcore.nn import FlopCountAnalysis, flop_count_str, flop_count, parameter_c
 from mri_utils import ifft2c, rss, complex_abs, rss_complex, sens_expand, sens_reduce
 
 from .utils_VSSD import KspaceACSExtractor, DownBlock, UpBlock, SkipBlock, PatchEmbed, FinalProjection
-from .VSSDBlock import VSSDBlock
+from .MLLABlock import MLLABlock
+from .UNetBlock import UNet
 
 
 class PromptUnet(nn.Module): 
@@ -60,12 +61,10 @@ class PromptUnet(nn.Module):
 
         # Bottleneck 
         self.bottleneck = nn.Sequential(*[
-            VSSDBlock(
+            MLLABlock(
                 dim = feature_dim[2],
-                d_state = d_state,
                 num_heads = num_heads[3],
                 drop = dropout,
-                attn_type='standard',
                 **kwargs
             ) for _ in range(n_bottleneck_cab)
         ])
@@ -162,34 +161,46 @@ class NormPromptUnet(nn.Module):
         n_buffer: int=0,
         n_history: int=0,
         dropout: float=0.,
+        use_plain_unet : bool=False,
         **kwargs
     ):
 
         super().__init__()
         self.n_history = n_history
         self.n_buffer = n_buffer
-  
-        self.unet = PromptUnet(in_chans=in_chans,
-                            out_chans=out_chans,
-                            patch_size=patch_size,
-                            n_feat0=n_feat0,
-                            d_state=d_state,
-                            num_heads=num_heads,
-                            feature_dim=feature_dim,
-                            prompt_dim=prompt_dim,
-                            len_prompt=len_prompt,
-                            prompt_size=prompt_size,
-                            n_enc_cab=n_enc_cab,
-                            n_dec_cab=n_dec_cab,
-                            n_skip_cab=n_skip_cab,
-                            n_bottleneck_cab=n_bottleneck_cab,
-                            learnable_prompt = learnable_prompt,
-                            adaptive_input=adaptive_input,
-                            n_buffer = n_buffer,
-                            n_history= n_history,
-                            dropout=dropout,
-                            **kwargs
-                            )
+        self.use_plain_unet = use_plain_unet
+
+        if self.use_plain_unet:
+            self.unet = self.unet = UNet(
+                        in_chans=in_chans,
+                        out_chans=out_chans,
+                        chans=32,
+                        num_pool_layers=4,
+                        drop_prob=dropout,
+                    )
+            
+        else:
+            self.unet = PromptUnet(in_chans=in_chans,
+                                out_chans=out_chans,
+                                patch_size=patch_size,
+                                n_feat0=n_feat0,
+                                d_state=d_state,
+                                num_heads=num_heads,
+                                feature_dim=feature_dim,
+                                prompt_dim=prompt_dim,
+                                len_prompt=len_prompt,
+                                prompt_size=prompt_size,
+                                n_enc_cab=n_enc_cab,
+                                n_dec_cab=n_dec_cab,
+                                n_skip_cab=n_skip_cab,
+                                n_bottleneck_cab=n_bottleneck_cab,
+                                learnable_prompt = learnable_prompt,
+                                adaptive_input=adaptive_input,
+                                n_buffer = n_buffer,
+                                n_history= n_history,
+                                dropout=dropout,
+                                **kwargs
+                                )
 
 
 
@@ -268,7 +279,10 @@ class NormPromptUnet(nn.Module):
         x, mean, std = self.norm(x)
         x, pad_sizes = self.pad(x)
         
-        x, history_feat = self.unet(x, history_feat)
+        if self.use_plain_unet:
+            x = self.unet(x)
+        else:
+            x, history_feat = self.unet(x, history_feat)
 
         x = self.unpad(x, *pad_sizes)
         x = self.unnorm(x, mean, std)
@@ -616,6 +630,7 @@ class SensitivityModel(nn.Module):
                                         n_bottleneck_cab=n_bottleneck_cab,
                                         learnable_prompt = learnable_prompt,
                                         dropout = dropout,
+                                        use_plain_unet=False,
                                         **kwargs
                                         )
         self.kspace_acs_extractor = KspaceACSExtractor(mask_center)

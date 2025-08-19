@@ -68,39 +68,6 @@
 #       tags: [VSSD-Recon]
 
 
-# ############# Micro64 VSSD Blocks #############
-
-model:
-  class_path: pl_modules.PromptMrModule
-  init_args:
-    num_cascades:       12
-    num_adj_slices:     5
-    patch_size:         4
-    d_state:            64
-    n_feat0:            64
-    num_heads:          [2,4,8,16]
-    feature_dim:        [128,256,512]
-    sens_n_feat0:       64
-    sens_feature_dim:   [128,256,512]
-    n_enc_cab:          [2,4,8]
-    n_dec_cab:          [2,2,2]
-    n_skip_cab:         [0,0,0]
-    n_bottleneck_cab:   4   
-    adaptive_input:     false
-    n_buffer:           0
-    n_history:          0
-    use_sens_adj:       true
-    lr_gamma:           0.1
-    weight_decay:       1e-2
-    use_checkpoint:     false
-
-# add model tags to wandb
-trainer:
-  logger:
-    class_path: lightning.pytorch.loggers.WandbLogger
-    init_args:
-      tags: [VSSD-Recon]
-
 # ############# Tiny VSSD Blocks #############
 
 # model:
@@ -115,8 +82,8 @@ trainer:
 #     feature_dim:        [128,256,512]
 #     sens_n_feat0:       64
 #     sens_feature_dim:   [128,256,512]
-#     n_enc_cab:          [2,4,12]
-#     n_dec_cab:          [2,4,12]
+#     n_enc_cab:          [2,4,8]
+#     n_dec_cab:          [2,2,2]
 #     n_skip_cab:         [0,0,0]
 #     n_bottleneck_cab:   4   
 #     adaptive_input:     false
@@ -133,6 +100,39 @@ trainer:
 #     class_path: lightning.pytorch.loggers.WandbLogger
 #     init_args:
 #       tags: [VSSD-Recon]
+
+# ############# Tiny VSSD Blocks #############
+
+model:
+  class_path: pl_modules.PromptMrModule
+  init_args:
+    num_cascades:       12
+    num_adj_slices:     5
+    patch_size:         4
+    d_state:            64
+    n_feat0:            64
+    num_heads:          [2,4,8,16]
+    feature_dim:        [128,256,512]
+    sens_n_feat0:       64
+    sens_feature_dim:   [128,256,512]
+    n_enc_cab:          [2,4,12]
+    n_dec_cab:          [2,4,12]
+    n_skip_cab:         [0,0,0]
+    n_bottleneck_cab:   4   
+    adaptive_input:     false
+    n_buffer:           0
+    n_history:          0
+    use_sens_adj:       true
+    lr_gamma:           0.1
+    weight_decay:       1e-2
+    use_checkpoint:     false
+
+# add model tags to wandb
+trainer:
+  logger:
+    class_path: lightning.pytorch.loggers.WandbLogger
+    init_args:
+      tags: [VSSD-Recon]
 
 
 ############# Small VSSD Blocks #############

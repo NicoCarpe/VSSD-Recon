@@ -9,135 +9,8 @@ from einops import rearrange
 from fvcore.nn import FlopCountAnalysis, flop_count_str, flop_count, parameter_count
 from mri_utils import ifft2c, rss, complex_abs, rss_complex, sens_expand, sens_reduce
 
-from .utils_VSSD import KspaceACSExtractor, DownBlock, UpBlock, SkipBlock, PatchEmbed, FinalProjection
-from .VSSDBlock import VSSDBlock
-
-
-class PromptUnet(nn.Module): 
-    def __init__(self,
-                 in_chans: int,
-                 out_chans: int,
-                 patch_size: int,
-                 n_feat0: int,
-                 d_state: int,
-                 num_heads: List[int],
-                 feature_dim: List[int],
-                 prompt_dim: List[int],
-                 len_prompt: List[int],
-                 prompt_size: List[int],
-                 n_enc_cab: List[int],
-                 n_dec_cab: List[int],
-                 n_skip_cab: List[int],
-                 n_bottleneck_cab: int,
-                 learnable_prompt: bool,
-                 adaptive_input: bool,
-                 n_buffer: int,
-                 n_history: int,
-                 dropout: float,
-                 bias = False,
-                 **kwargs
-                 ):
-        super().__init__()
-        self.feature_dim = feature_dim
-        self.n_history = n_history
-        self.n_buffer = n_buffer if adaptive_input else 0
-        
-        in_chans = in_chans * (1+self.n_buffer) if adaptive_input else in_chans 
-        out_chans = out_chans * (1+self.n_buffer) if adaptive_input else out_chans 
-        
-        # Patch Embedding
-        self.patch_embed = PatchEmbed(patch_size=patch_size, in_chans=in_chans, embed_dim=n_feat0)
-        
-        # Encoder - 3 DownBlocks
-        self.enc_level1 = DownBlock(n_feat0, d_state, n_enc_cab[0], num_heads[0], dropout, **kwargs)
-        self.enc_level2 = DownBlock(feature_dim[0], d_state, n_enc_cab[1], num_heads[1], dropout, **kwargs)
-        self.enc_level3 = DownBlock(feature_dim[1], d_state, n_enc_cab[2], num_heads[2],  dropout, **kwargs)
-
-        # Skip Connections - 3 SkipBlocks
-        self.skip_attn1 = SkipBlock(n_feat0, d_state, n_skip_cab[0], num_heads[0], dropout, **kwargs)
-        self.skip_attn2 = SkipBlock(feature_dim[0], d_state, n_skip_cab[1], num_heads[1], dropout, **kwargs)
-        self.skip_attn3 = SkipBlock(feature_dim[1], d_state, n_skip_cab[2], num_heads[2], dropout, **kwargs)
-
-        # Bottleneck 
-        self.bottleneck = nn.Sequential(*[
-            VSSDBlock(
-                dim = feature_dim[2],
-                d_state = d_state,
-                num_heads = num_heads[3],
-                drop = dropout,
-                attn_type='standard',
-                **kwargs
-            ) for _ in range(n_bottleneck_cab)
-        ])
-
-        # Decoder - 3 UpBlocks
-        self.dec_level3 = UpBlock(feature_dim[2], d_state, n_dec_cab[2], num_heads[2], bias, dropout, n_history, **kwargs)
-        self.dec_level2 = UpBlock(feature_dim[1], d_state, n_dec_cab[1], num_heads[1], bias, dropout, n_history, **kwargs)
-        self.dec_level1 = UpBlock(feature_dim[0], d_state, n_dec_cab[0], num_heads[0], bias, dropout, n_history, **kwargs)
-
-        # OutConv
-        self.final_proj = FinalProjection(n_feat0, out_chans)
-
-    def forward(self, x: torch.Tensor, history_feat: Optional[List[torch.Tensor]] = None):
-        """
-        Forward pass of PromptUnet.
-
-        Args:
-            x: (B, C, H, W) tensor after patch embedding via PatchEmbed
-            history_feat: list of 3 tensors or None for temporal context, each of shape [(B, D_i, H_i, W_i)]
-
-        Returns:
-            tuple:
-                - out: (B, C_out, H, W) final projection output from FinalProjection
-                - history_feat: updated list of history features for next cascade
-        """
-        if history_feat is None:
-            history_feat = [None, None, None]
-
-        history_feat3, history_feat2 , history_feat1 = history_feat
-        current_feat = []
-        
-        # 0. patch embedding: x_in (B, C_in, H, W) -> x_embed (B, n_feat0, H', W')
-        x = self.patch_embed(x)
-
-        # 1. encoder
-        # enc_level1: x_embed -> x1_down (B, D1, H'/2, W'/2), enc1 skip (B, D0, H', W')
-        x, enc1 = self.enc_level1(x)
-        # enc_level2: x1_down -> x2_down (B, D2, H'/4, W'/4), enc2 skip (B, D1, H'/2, W'/2)
-        x, enc2 = self.enc_level2(x)
-        # enc_level3: x2_down -> x3_down (B, D3, H'/8, W'/8), enc3 skip (B, D2, H'/4, W'/4)
-        x, enc3 = self.enc_level3(x)
-
-        # 2. bottleneck: x3_down -> same shape (B, D2, H'/8, W'/8)
-        x = self.bottleneck(x)
-
-        # 3. decoder
-        current_feat.append(x.clone())
-        x = self.dec_level3(x, self.skip_attn3(enc3), history_feat3)
-        # x out: (B, D2, H'/4, W'/4)
-
-        current_feat.append(x.clone())
-        x = self.dec_level2(x, self.skip_attn2(enc2), history_feat2)
-        # x out: (B, D1, H'/2, W'/2)
-
-        current_feat.append(x.clone())
-        x = self.dec_level1(x, self.skip_attn1(enc1), history_feat1)
-        # x out: (B, n_feat0, H', W')
-
-        # 4. final projection
-        if self.n_history > 0:
-            # update history_feat shapes accordingly
-            # history_feat[i]: (B, D_i * n_history, H_i, W_i)
-            for i, history_feat_i in enumerate(history_feat):
-                if history_feat_i is None:
-                    history_feat[i] = torch.tile(current_feat[i], (1, self.n_history, 1, 1))
-                else:
-                    dim = self.feature_dim[2-i]
-                    history_feat[i] = torch.cat([current_feat[i], history_feat_i[:, :-dim]], dim=1)
-
-        out = self.final_proj(x)
-
-        return out, history_feat
+from .utils_E2E import KspaceACSExtractor
+from .UNetBlock import UNet
 
 
 class NormPromptUnet(nn.Module):
@@ -166,32 +39,15 @@ class NormPromptUnet(nn.Module):
     ):
 
         super().__init__()
-        self.n_history = n_history
-        self.n_buffer = n_buffer
-  
-        self.unet = PromptUnet(in_chans=in_chans,
-                            out_chans=out_chans,
-                            patch_size=patch_size,
-                            n_feat0=n_feat0,
-                            d_state=d_state,
-                            num_heads=num_heads,
-                            feature_dim=feature_dim,
-                            prompt_dim=prompt_dim,
-                            len_prompt=len_prompt,
-                            prompt_size=prompt_size,
-                            n_enc_cab=n_enc_cab,
-                            n_dec_cab=n_dec_cab,
-                            n_skip_cab=n_skip_cab,
-                            n_bottleneck_cab=n_bottleneck_cab,
-                            learnable_prompt = learnable_prompt,
-                            adaptive_input=adaptive_input,
-                            n_buffer = n_buffer,
-                            n_history= n_history,
-                            dropout=dropout,
-                            **kwargs
-                            )
-
-
+        # self.n_history = n_history
+        # self.n_buffer = n_buffer
+        self.unet = self.unet = UNet(
+                        in_chans=in_chans,
+                        out_chans=out_chans,
+                        chans=32,
+                        num_pool_layers=4,
+                        drop_prob=dropout,
+                    )
 
     def complex_to_chan_dim(self, x: torch.Tensor) -> torch.Tensor:
         b, c, h, w, two = x.shape
@@ -267,9 +123,7 @@ class NormPromptUnet(nn.Module):
         # normalize, pad, unet, unpad, unnorm back
         x, mean, std = self.norm(x)
         x, pad_sizes = self.pad(x)
-        
-        x, history_feat = self.unet(x, history_feat)
-
+        x = self.unet(x)
         x = self.unpad(x, *pad_sizes)
         x = self.unnorm(x, mean, std)
         x = self.chan_complex_to_last_dim(x)

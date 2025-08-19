@@ -48,25 +48,32 @@ model:
   class_path: pl_modules.PromptMrModule
   init_args:
     num_cascades: 12
-    num_adj_slices: 5
+    num_adj_slices: 3
+    patch_size: 4
     n_feat0: 48
+    d_state: 64
+    num_heads:
+    - 2
+    - 4
+    - 8
+    - 16
     feature_dim:
-    - 72
-    - 96
-    - 120
+    - 128
+    - 256
+    - 512
     prompt_dim:
-    - 24
-    - 48
-    - 72
+    - 32
+    - 64
+    - 128
     sens_n_feat0: 24
     sens_feature_dim:
-    - 36
-    - 48
-    - 60
+    - 64
+    - 128
+    - 256
     sens_prompt_dim:
-    - 12
-    - 24
-    - 36
+    - 16
+    - 32
+    - 64
     len_prompt:
     - 5
     - 5
@@ -90,11 +97,12 @@ model:
     n_bottleneck_cab: 3
     no_use_ca: false
     learnable_prompt: false
-    adaptive_input: true
-    n_buffer: 4
+    adaptive_input: false
+    n_buffer: 0
     n_history: 0
     use_sens_adj: true
-    model_version: prompt_mamba
+    dropout: 0.0
+    model_version: vssd_recon
     lr: 0.0002
     lr_step_size: 11
     lr_gamma: 0.1
@@ -123,10 +131,10 @@ data:
         filter_str: null
         logic: or
     batch_size: 1
-    num_workers: 0
+    num_workers: 6
     distributed_sampler: true
-    num_adj_slices: 3
+    num_adj_slices: 5
 optimizer: null
 lr_scheduler: null
 return_predictions: null
-ckpt_path: /home/nicocarp/scratch/VSSD-Recon/scripts/exp/cmr25-cardiac/VSSD-Recon/deep_recon/8bbk6x8z/checkpoints/last.ckpt
+ckpt_path: /home/nicocarp/scratch/VSSD-Recon/scripts/exp/cmr25-cardiac/VSSD-Recon/deep_recon/7mnx88lt/checkpoints/last.ckpt

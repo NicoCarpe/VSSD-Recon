@@ -11,8 +11,7 @@ from timm.layers import DropPath, to_2tuple, trunc_normal_
 from einops import rearrange
 
 from data import transforms
-#from .VSSBlock import VSSBlock
-from .VSSDBlock import VSSDBlock
+from .SWINBlock import SwinTransformerBlock as SWINBlock
 
 
 ##########################################################################
@@ -22,16 +21,14 @@ class DownBlock(nn.Module):
     def __init__(self, in_dim, d_state, n_block, num_heads, dropout, **kwargs):
         super().__init__()
 
-        self.encoder = nn.Sequential(*[
-            VSSDBlock(
-                dim=in_dim,
-                d_state=d_state,
-                num_heads=num_heads,                
-                drop=dropout,
-                attn_type='mamba2',
-                **kwargs
-            ) for _ in range(n_block)
-        ])
+        self.encoder = nn.Sequential(
+                *[blk
+                for _ in range(n_block // 2)
+                for blk in (
+                    SWINBlock(dim=in_dim, num_heads=num_heads, window_size=8, shift_size=0),
+                    SWINBlock(dim=in_dim, num_heads=num_heads, window_size=8, shift_size=8 // 2),
+                )]
+            )
         
         self.down = PatchMerge(dim=in_dim)
 
@@ -53,26 +50,20 @@ class UpBlock(nn.Module):
         if n_history > 0:
             self.momentum = nn.Sequential(
                 nn.Conv2d(in_dim*(n_history+1), in_dim, kernel_size=1, bias=bias),
-                VSSDBlock(
-                    dim=in_dim,
-                    d_state = d_state,
-                    num_heads = num_heads,
-                    drop = dropout,
-                    attn_type='mamba2',
-                    **kwargs
-                )
+                # SWINBlock(
+                #     dim=in_dim,
+                #     **kwargs
+                # )
             )
 
-        self.decoder = nn.Sequential(*[
-            VSSDBlock(
-                dim=in_dim//2,          # this operation happens after patch expand
-                d_state = d_state,
-                num_heads = num_heads,
-                drop = dropout,
-                attn_type='mamba2',
-                **kwargs
-            ) for _ in range(n_block)
-        ])
+        self.decoder = nn.Sequential(
+                *[blk
+                for _ in range(n_block // 2)
+                for blk in (
+                    SWINBlock(dim=in_dim//2, num_heads=num_heads, window_size=8, shift_size=0),
+                    SWINBlock(dim=in_dim//2, num_heads=num_heads, window_size=8, shift_size=8 // 2),
+                )]
+            )
 
         self.up = PatchExpand(dim=in_dim, dim_scale=2)
 
@@ -103,16 +94,14 @@ class SkipBlock(nn.Module):
         if n_cab == 0:
             self.skip_attn = nn.Identity()
         else:
-            self.skip_attn = nn.Sequential(*[
-                VSSDBlock(
-                    dim=enc_dim,
-                    d_state = d_state,
-                    num_heads = num_heads,
-                    drop = dropout,
-                    attn_type='mamba2',
-                    **kwargs
-                ) for _ in range(n_cab)
-            ])
+            self.skip_attn = nn.Sequential(
+                *[blk
+                for _ in range(n_cab // 2)
+                for blk in (
+                    SWINBlock(dim=enc_dim, num_heads=num_heads, window_size=8, shift_size=0),
+                    SWINBlock(dim=enc_dim, num_heads=num_heads, window_size=8, shift_size=8 // 2),
+                )]
+            )
 
     def forward(self, x):
         x = self.skip_attn(x)
@@ -138,8 +127,8 @@ class KspaceACSExtractor:
         get the padding size and number of low frequencies for the center mask. For fastmri and cmrxrecon dataset
         '''
         if num_low_frequencies is None or (num_low_frequencies == -1).all():
-            # get low frequency line locations and mask them out
-            squeezed_mask = mask[:, 0, 0, :, 0].to(torch.int8)
+            # get low frequency line locations (ny) and mask them out
+            squeezed_mask = mask[:, 0, :, 0, 0].to(torch.int8)
             cent = squeezed_mask.shape[1] // 2
             # running argmin returns the first non-zero
             left = torch.argmin(squeezed_mask[:, :cent].flip(1), dim=1)
@@ -152,7 +141,8 @@ class KspaceACSExtractor:
                 mask.shape[0], dtype=mask.dtype, device=mask.device
             )
 
-        pad = (mask.shape[-2] - num_low_frequencies_tensor + 1) // 2
+        # compute pad along H axis (shape[-3])
+        pad = (mask.shape[-3] - num_low_frequencies_tensor + 1) // 2
         return pad.type(torch.long), num_low_frequencies_tensor.type(torch.long)
 
     def circular_centered_mask(self, shape, radius):

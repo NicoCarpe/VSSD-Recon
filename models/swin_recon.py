@@ -9,8 +9,8 @@ from einops import rearrange
 from fvcore.nn import FlopCountAnalysis, flop_count_str, flop_count, parameter_count
 from mri_utils import ifft2c, rss, complex_abs, rss_complex, sens_expand, sens_reduce
 
-from .utils_VSSD import KspaceACSExtractor, DownBlock, UpBlock, SkipBlock, PatchEmbed, FinalProjection
-from .VSSDBlock import VSSDBlock
+from .utils_SWIN import KspaceACSExtractor, DownBlock, UpBlock, SkipBlock, PatchEmbed, FinalProjection
+from .SWINBlock import SwinTransformerBlock as SWINBlock
 
 
 class PromptUnet(nn.Module): 
@@ -59,16 +59,14 @@ class PromptUnet(nn.Module):
         self.skip_attn3 = SkipBlock(feature_dim[1], d_state, n_skip_cab[2], num_heads[2], dropout, **kwargs)
 
         # Bottleneck 
-        self.bottleneck = nn.Sequential(*[
-            VSSDBlock(
-                dim = feature_dim[2],
-                d_state = d_state,
-                num_heads = num_heads[3],
-                drop = dropout,
-                attn_type='standard',
-                **kwargs
-            ) for _ in range(n_bottleneck_cab)
-        ])
+        self.bottleneck = nn.Sequential(
+            *[blk
+            for _ in range(n_bottleneck_cab // 2)
+            for blk in (
+                SWINBlock(dim=feature_dim[2], num_heads=num_heads[3], window_size=8, shift_size=0),
+                SWINBlock(dim=feature_dim[2], num_heads=num_heads[3], window_size=8, shift_size=8 // 2),
+            )]
+        )
 
         # Decoder - 3 UpBlocks
         self.dec_level3 = UpBlock(feature_dim[2], d_state, n_dec_cab[2], num_heads[2], bias, dropout, n_history, **kwargs)
@@ -168,30 +166,27 @@ class NormPromptUnet(nn.Module):
         super().__init__()
         self.n_history = n_history
         self.n_buffer = n_buffer
-  
         self.unet = PromptUnet(in_chans=in_chans,
-                            out_chans=out_chans,
-                            patch_size=patch_size,
-                            n_feat0=n_feat0,
-                            d_state=d_state,
-                            num_heads=num_heads,
-                            feature_dim=feature_dim,
-                            prompt_dim=prompt_dim,
-                            len_prompt=len_prompt,
-                            prompt_size=prompt_size,
-                            n_enc_cab=n_enc_cab,
-                            n_dec_cab=n_dec_cab,
-                            n_skip_cab=n_skip_cab,
-                            n_bottleneck_cab=n_bottleneck_cab,
-                            learnable_prompt = learnable_prompt,
-                            adaptive_input=adaptive_input,
-                            n_buffer = n_buffer,
-                            n_history= n_history,
-                            dropout=dropout,
-                            **kwargs
-                            )
-
-
+                               out_chans=out_chans,
+                               patch_size=patch_size,
+                               n_feat0=n_feat0,
+                               d_state=d_state,
+                               num_heads=num_heads,
+                               feature_dim=feature_dim,
+                               prompt_dim=prompt_dim,
+                               len_prompt=len_prompt,
+                               prompt_size=prompt_size,
+                               n_enc_cab=n_enc_cab,
+                               n_dec_cab=n_dec_cab,
+                               n_skip_cab=n_skip_cab,
+                               n_bottleneck_cab=n_bottleneck_cab,
+                               learnable_prompt = learnable_prompt,
+                               adaptive_input=adaptive_input,
+                               n_buffer = n_buffer,
+                               n_history= n_history,
+                               dropout=dropout,
+                               **kwargs
+                               )
 
     def complex_to_chan_dim(self, x: torch.Tensor) -> torch.Tensor:
         b, c, h, w, two = x.shape
@@ -267,9 +262,7 @@ class NormPromptUnet(nn.Module):
         # normalize, pad, unet, unpad, unnorm back
         x, mean, std = self.norm(x)
         x, pad_sizes = self.pad(x)
-        
         x, history_feat = self.unet(x, history_feat)
-
         x = self.unpad(x, *pad_sizes)
         x = self.unnorm(x, mean, std)
         x = self.chan_complex_to_last_dim(x)

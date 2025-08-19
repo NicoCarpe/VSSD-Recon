@@ -17,7 +17,6 @@ from lightning.pytorch.callbacks import BasePredictionWriter
 from mri_utils import save_reconstructions
 from pl_modules import PromptMrModule
 
-torch.set_float32_matmul_precision("high") 
 
 def preprocess_save_dir():
     """Ensure `save_dir` exists, handling both command-line arguments and YAML configuration."""

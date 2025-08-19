@@ -1,11 +1,11 @@
 #!/bin/bash -l
 #SBATCH -J VSSD-Recon_predict
-#SBATCH --time=00-06:00:00
+#SBATCH --time=00-03:00:00
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
-#SBATCH --gpus-per-node=v100l:1
-#SBATCH --cpus-per-task=1
-#SBATCH --mem=96G
+#SBATCH --gpus-per-node=h100:1
+#SBATCH --cpus-per-task=6
+#SBATCH --mem=128G
 #SBATCH --account=def-punithak
 #SBATCH --mail-type=BEGIN,END,FAIL
 #SBATCH --mail-user=ngcarpen@ualberta.ca
@@ -29,6 +29,9 @@ module load cudnn/8.9.5.29
 module load nccl/2.18.3
 module load python/3.10
 
+# enable H100 tensor-core matmuls (inside Python)
+export PYTHONSTARTUP=$PROJECT_ROOT/.pystartup_matmul
+
 # create a clean venv
 python -m venv $SLURM_TMPDIR/env
 source $SLURM_TMPDIR/env/bin/activate
@@ -38,4 +41,4 @@ python -m pip install --no-index -r $PROJECT_ROOT/configs/env_local.txt
 python -m pip install -r $PROJECT_ROOT/configs/env_pypi.txt
 
 # Run evaluation
-python $PROJECT_ROOT/main.py predict --config $PROJECT_ROOT/configs/inference/VSSD-Recon/cmr25-cardiac.yaml
+python $PROJECT_ROOT/main.py predict --config $PROJECT_ROOT/configs/inference/vssd-recon/cmr25-cardiac.yaml

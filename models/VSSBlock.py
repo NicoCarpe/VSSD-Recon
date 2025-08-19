@@ -24,6 +24,47 @@ except:
 
 DropPath.__repr__ = lambda self: f"timm.DropPath({self.drop_prob})"
 
+class Mlp(nn.Module):
+    def __init__(self, in_features, hidden_features=None, out_features=None, act_layer=nn.GELU, drop=0.):
+        super().__init__()
+        out_features = out_features or in_features
+        hidden_features = hidden_features or in_features
+        self.fc1 = nn.Linear(in_features, hidden_features)
+        self.act = act_layer()
+        self.fc2 = nn.Linear(hidden_features, out_features)
+        self.drop = nn.Dropout(drop)
+
+    def forward(self, x):
+        x = self.fc1(x)
+        x = self.act(x)
+        x = self.drop(x)
+        x = self.fc2(x)
+        x = self.drop(x)
+        return x
+    
+
+class StandardAttention(nn.Module):
+    def __init__(self, dim, heads=8, dim_head=64, dropout=0., **kwargs):
+        super().__init__()
+        inner_dim = dim_head * heads
+        self.heads = heads
+        self.scale = dim_head ** -0.5
+        self.to_qkv = nn.Linear(dim, inner_dim * 3, bias=False)
+        self.to_out = nn.Linear(inner_dim, dim)
+        self.dropout = nn.Dropout(dropout)
+        self.inner_dim = inner_dim
+
+
+    def forward(self, x, H, W):
+        qkv = self.to_qkv(x).chunk(3, dim=-1)
+        q, k, v = map(lambda t: rearrange(t, 'b n (h d) -> b h n d', h=self.heads), qkv)
+        dots = torch.einsum('bhid,bhjd->bhij', q, k) * self.scale
+        attn = dots.softmax(dim=-1)
+        attn = self.dropout(attn)
+        out = torch.einsum('bhij,bhjd->bhid', attn, v)
+        out = rearrange(out, 'b h n d -> b n (h d)')
+        return self.to_out(out)
+
 class SS2D(nn.Module):
     def __init__(
         self,
@@ -217,24 +258,49 @@ class SS2D(nn.Module):
 class VSSBlock(nn.Module):
     def __init__(
         self,
-        hidden_dim: int = 0,        
+        dim: int = 0,        
         d_state: int = 16,
         headdim: int = 0,
-        drop_path: float = 0,
-        norm_layer: Callable[..., torch.nn.Module] = partial(nn.LayerNorm, eps=1e-6),
+        mlp_ratio=4.,
+        drop=0., 
+        drop_path=0.,
+        act_layer=nn.GELU,
+        norm_layer: Callable[..., torch.nn.Module] = nn.LayerNorm,
         attn_drop_rate: float = 0,
         bias: bool = False,
+        attn_type='mamba',
         **kwargs,
     ):
         super().__init__()
-        self.ln_1 = norm_layer(hidden_dim)
-        self.ssm = SS2D(d_model=hidden_dim, d_state=d_state, dropout=attn_drop_rate, bias=bias, **kwargs)
+        self.cpe1 = nn.Conv2d(dim, dim, 3, padding=1, groups=dim, bias=False)
+        self.norm1 = norm_layer(dim)
+        self.ssm = SS2D(d_model=dim, d_state=d_state, dropout=attn_drop_rate, bias=bias, **kwargs)
         self.drop_path = DropPath(drop_path)
+        self.cpe2 = nn.Conv2d(dim, dim, 3, padding=1, groups=dim, bias=False)
+        self.norm2 = norm_layer(dim)
+        self.mlp = Mlp(in_features=dim, hidden_features=int(dim * mlp_ratio), act_layer=act_layer, drop=drop)
+
 
     def forward(self, x: torch.Tensor):
-        x_ln = x.permute(0, 2, 3, 1).contiguous()       # [B,C,H,W] --> [B,H,W,C]
-        x_ln = self.ln_1(x_ln)                          # norm across C    
-        out = self.drop_path(self.ssm(x_ln))
-        out = out.permute(0, 3, 1, 2).contiguous()    # [B,H,W,C] --> [B,C,H,W]
-        
-        return x + out
+        B, C, H, W = x.shape
+        # [B, C, H, W] → [B, H, W, C]
+        x = x.permute(0, 2, 3, 1)
+
+        # make sure conv are shaped properly
+        x = x + self.cpe1(x.permute(0, 3, 1, 2)).permute(0, 2, 3, 1)
+        shortcut = x
+
+        x = self.norm1(x)
+
+        # SSD or Standard Attention
+        x = self.ssm(x)
+        x = shortcut + self.drop_path(x)
+        x = x + self.cpe2(x.permute(0, 3, 1, 2)).permute(0, 2, 3, 1)
+
+        # MLP
+        x = x + self.drop_path(self.mlp(self.norm2(x)))
+
+        # [B, H, W, C] → [B, C, H, W]
+        x = x.permute(0, 3, 1, 2)
+
+        return x

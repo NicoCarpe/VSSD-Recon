@@ -4,15 +4,15 @@ data:
     slice_dataset: data.CmrxReconSliceDataset
     data_path: /home/nicocarp/scratch/VSSD-Recon/mridatasets/cmrxrecon2024
     challenge: multicoil
-    sample_rate: 0.1
-    val_sample_rate: 0.1
-    data_balancer:
-      class_path: data.BalanceSampler
-      init_args: 
-        ratio_dict: {
-          'T1map': 2, 'T2map': 6, 'cine_lax': 2, 'cine_sax': 1, 
-          'cine_lvot': 6, 'aorta_sag': 1, 'aorta_tra': 1,'tagging': 1 
-        }
+    sample_rate: 0.01
+    val_sample_rate: 0.01
+    # data_balancer:
+    #   class_path: data.BalanceSampler
+    #   init_args: 
+    #     ratio_dict: {
+    #       'T1map': 2, 'T2map': 6, 'cine_lax': 2, 'cine_sax': 1, 
+    #       'cine_lvot': 6, 'aorta_sag': 1, 'aorta_tra': 1,'tagging': 1 
+    #     }
     train_transform:
       class_path: data.CmrxReconDataTransform
       init_args:
@@ -20,8 +20,8 @@ data:
           class_path: data.CmrxRecon24MaskFunc
           init_args:
             num_low_frequencies: 
-            - 16
-            num_adj_slices: &num_adj_slices 3
+            - 20
+            num_adj_slices: &num_adj_slices 5
             mask_path: /home/nicocarp/scratch/VSSD-Recon/mridatasets/cmrxrecon2024/mask/mask_radial.h5
         uniform_resolution: null
         use_seed: false
@@ -32,7 +32,7 @@ data:
           class_path: data.CmrxRecon24MaskFunc
           init_args:
             num_low_frequencies: 
-            - 16
+            - 20
             num_adj_slices: *num_adj_slices
             mask_path: /home/nicocarp/scratch/VSSD-Recon/mridatasets/cmrxrecon2024/mask/mask_radial.h5
         uniform_resolution: null
@@ -47,11 +47,11 @@ data:
 # dataset specific settings
 trainer:
   strategy: ddp
-  devices: 2
+  devices: 4
   num_nodes: 1
-  max_epochs: 8
-  # NOTE: automatic mixed precision seems to blow up the training
-  # precision: 16
+  max_epochs: 20
+  # NOTE: 16-mixed precision is not precise enough
+  # precision: bf16-mixed
   # NOTE: probably don't want to have accumulate grad batches due to the heterogeneity of our dataset
   # accumulate_grad_batches: 2  # Real batch size is accum * batch_size, real steps/"epoch" is epoch_size / accum
 
