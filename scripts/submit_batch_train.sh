@@ -1,11 +1,11 @@
 #!/bin/bash -l
 #SBATCH -J VSSD-Recon_train
-#SBATCH --time=00-01:00:00
+#SBATCH --time=00-03:00:00
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=4
 #SBATCH --gpus-per-node=h100:4
-#SBATCH --cpus-per-task=6       
-#SBATCH --mem=256GB                 
+#SBATCH --cpus-per-task=4       
+#SBATCH --mem=128GB                 
 #SBATCH --account=def-punithak
 #SBATCH --mail-type=BEGIN,END,FAIL
 #SBATCH --mail-user=ngcarpen@ualberta.ca

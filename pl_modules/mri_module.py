@@ -10,17 +10,17 @@ import pathlib
 from argparse import ArgumentParser
 from collections import defaultdict
 
-import matplotlib.pyplot as plt
 import numpy as np
 import lightning as L
 import torch
 from torchmetrics.metric                import Metric
 from torchmetrics.functional.regression import mean_squared_error
 from torchmetrics.functional.image      import structural_similarity_index_measure
-
+import seaborn as sns
+import matplotlib.pyplot as plt
+from io import BytesIO
 
 from mri_utils import utils, save_reconstructions
-
 
 class DistributedMetricSum(Metric):
     def __init__(self, dist_sync_on_step=True):
@@ -66,6 +66,7 @@ class MriModule(L.LightningModule):
         self.val_log_indices = None
         # self.training_step_outputs = []
         self.validation_step_outputs = []
+        self.erf_accumulator = []  
 
         self.NMSE = DistributedMetricSum()
         self.SSIM = DistributedMetricSum()
@@ -77,16 +78,9 @@ class MriModule(L.LightningModule):
 
     def on_train_epoch_end(self):
         pass
-        # do something with all training_step outputs, for example:
-        # epoch_mean = torch.stack(self.training_step_outputs).mean()
-        # self.log("training_epoch_mean", epoch_mean)
-        # # free up the memory
-        # self.training_step_outputs.clear()
 
-    # def validation_step_end(self, val_logs):
     def on_validation_batch_end(self, val_logs, batch, batch_idx, dataloader_idx=0):
-        # print('ddddddddddddddddddddddd............')
-        # check inputs
+        # --- basic key checks ---
         for k in (
             "batch_idx",
             "fname",
@@ -94,16 +88,14 @@ class MriModule(L.LightningModule):
             "max_value",
             'img_zf',
             "mask",
-            'sens_maps', # added for sens_maps
+            'sens_maps',
             "output",
             "target",
             "loss",
         ):
             if k not in val_logs.keys():
-                raise RuntimeError(
-                    f"Expected key {k} in dict returned by validation_step."
-                )
-        # print('debug !!!!!!!!!!!!!!:', val_logs["output"].shape, val_logs["img_zf"].shape, val_logs["target"].shape)  
+                raise RuntimeError(f"Expected key {k} in dict returned by validation_step.")
+
         if val_logs["output"].ndim == 2:
             val_logs["output"] = val_logs["output"].unsqueeze(0)
         elif val_logs["output"].ndim != 3:
@@ -113,70 +105,134 @@ class MriModule(L.LightningModule):
         elif val_logs["target"].ndim != 3:
             raise RuntimeError("Unexpected output size from validation_step.")
 
-        # pick a set of images to log if we don't have one already
         if self.val_log_indices is None:
-            # Determine the number of batches to sample from
             limit_val_batches = self.trainer.limit_val_batches
             if isinstance(limit_val_batches, float) and limit_val_batches <= 1.0:
-                num_val_batches = int(
-                    limit_val_batches
-                    * len(self.trainer.val_dataloaders) #.dataset)
-                )
+                num_val_batches = int(limit_val_batches * len(self.trainer.val_dataloaders))
             else:
                 num_val_batches = int(limit_val_batches)
-            # print('debug: num_val_batches:', num_val_batches)
-            # Randomly sample indices
-            self.val_log_indices = list(
-                np.random.permutation(num_val_batches)[: self.num_log_images]
-            )
-            # print('debug: self.val_log_indices:', self.val_log_indices)
-        # print('debug idx: ', val_logs["batch_idx"], batch_idx)
-        # log images to tensorboard
+            self.val_log_indices = list(np.random.permutation(num_val_batches)[:self.num_log_images])
+
         if isinstance(val_logs["batch_idx"], int):
             batch_indices = [val_logs["batch_idx"]]
         else:
             batch_indices = val_logs["batch_idx"]
-        # print('......................', batch_indices)
+
         for i, batch_idx in enumerate(batch_indices):
-            # print('......................', batch_idx, val_logs["target"].shape, val_logs["mask"].shape, val_logs["sens_maps"].shape)
-            if batch_idx in self.val_log_indices:
-                key = f"val_images_idx_{batch_idx}" #_{self.global_rank}"
-                mask = val_logs["mask"][i].unsqueeze(0)
-                target = val_logs["target"][i].unsqueeze(0)
-                output = val_logs["output"][i].unsqueeze(0)
-                img_zf = val_logs["img_zf"][i].unsqueeze(0)
-                # masked_kspace = val_logs["masked_kspace"][i].unsqueeze(0)
-                # print('debug sens on end_val: ', val_logs["sens_maps"].shape)
-                sens_maps = val_logs["sens_maps"][i].unsqueeze(0)
-                error = torch.abs(target - output)
+            if batch_idx not in self.val_log_indices:
+                continue
 
-                # mask = mask / mask.max() # looks betetr if not normalized
-                img_zf = img_zf / img_zf.max()
-                sens_maps = sens_maps / sens_maps.max()
-                # masked_kspace = masked_kspace / masked_kspace.max()
+            key = f"val_images_idx_{batch_idx}"
+            mask = val_logs["mask"][i].unsqueeze(0)
+            target = val_logs["target"][i].unsqueeze(0)
+            output = val_logs["output"][i].unsqueeze(0)
+            img_zf = val_logs["img_zf"][i].unsqueeze(0)
+            sens_maps = val_logs["sens_maps"][i].unsqueeze(0)
+            error = torch.abs(target - output)
+
+            # simple normalizations for visualization
+            img_zf = img_zf / img_zf.max()
+            sens_maps = sens_maps / sens_maps.max()
+            output = output / output.max()
+            target = target / target.max()
+            error = error / error.max()
+
+            cm = plt.get_cmap('mako')
+            error_np = error.squeeze().detach().cpu().numpy()
+            error_colored = cm(error_np)[:, :, :3]
+            error_chw = torch.from_numpy(error_colored).permute(2, 0, 1).float()
+
+            cpu_imgs_chw = [mask, sens_maps, img_zf**0.2, output**0.2, target**0.2, error_chw]
+            captions = ['mask', 'sens_maps', 'zf', 'reconstruction', 'target', 'error']
+
+            # ---------------------- VSSD VISUALIZATION BLOCK ----------------------
+            vlogs = val_logs.get("logs", None)
+            if isinstance(vlogs, dict) and any(v is not None for v in vlogs.values()):
+                def _norm01_tensor(x, eps=1e-6):
+                    # robust [0,1] normalization that won't NaN on constant tensors
+                    x = x.detach()
+                    xmin = x.min()
+                    xmax = x.max()
+                    return (x - xmin) / (xmax - xmin + eps)
+
+                def _seaborn_heatmap_to_tensor(arr2d, cmap="mako", vmin=None, vmax=None, figsize=(4, 4), dpi=100):
+                    if isinstance(arr2d, torch.Tensor):
+                        arr = arr2d.squeeze().detach().cpu().numpy()
+                    else:
+                        arr = np.array(arr2d)
+                    fig = plt.figure(figsize=figsize, dpi=dpi)
+                    ax = fig.add_subplot(111)
+                    ax.set_axis_off()
+                    sns.heatmap(
+                        arr, cmap=cmap, vmin=vmin, vmax=vmax,
+                        cbar=False, xticklabels=False, yticklabels=False, ax=ax
+                    )
+                    plt.tight_layout(pad=0)
+                    fig.canvas.draw()
+                    h, w = fig.canvas.get_width_height()
+                    buf = np.frombuffer(fig.canvas.buffer_rgba(), dtype=np.uint8).reshape(h, w, 4)[:, :, :3]
+                    img = torch.from_numpy(buf).permute(2, 0, 1).float() / 255.0
+                    plt.close(fig)
+                    return img
+
+                # m_map (optional)
+                m_map = vlogs.get("m_map", None)
+                if isinstance(m_map, torch.Tensor):
+                    m_img = m_map[i] if m_map.ndim >= 3 else m_map
+                    cpu_imgs_chw.append(_seaborn_heatmap_to_tensor(_norm01_tensor(m_img)))
+                    captions.append('m')
+
+                # order_sum (optional)
+                order_sum = vlogs.get("order_sum", None)
+                if isinstance(order_sum, torch.Tensor):
+                    order_sum_img = order_sum[i] if order_sum.ndim >= 3 else order_sum
+                    cpu_imgs_chw.append(_seaborn_heatmap_to_tensor(_norm01_tensor(order_sum_img)))
+                    captions.append('order_sum')
+
+                # per-order maps (optional) — EXPECTS a list/tuple of (B,H,W) CPU tensors
+                order_maps = vlogs.get("order_maps", None)
+                if isinstance(order_maps, (list, tuple)) and len(order_maps) > 0:
+                    for p_idx, p_map in enumerate(order_maps):
+                        if not isinstance(p_map, torch.Tensor):
+                            continue
+                        single_map = p_map[i] if p_map.ndim >= 3 else p_map
+                        cpu_imgs_chw.append(_seaborn_heatmap_to_tensor(_norm01_tensor(single_map)))
+                        captions.append(f"order{p_idx + 1}")
+
+                # gamma: log scalars 
+                gamma = vlogs.get("gamma", None)
+                if isinstance(gamma, torch.Tensor):
+                    g_list = gamma.detach().cpu().float().view(-1).tolist()
+                    for p_idx, gval in enumerate(g_list, 1):
+                        self.log(
+                            f"gamma/order_{p_idx}",
+                            float(gval),
+                            prog_bar=False,
+                            on_step=False,
+                            on_epoch=True,
+                            sync_dist=True,
+                        )
+
+
+            # --- Convert all to HWC for W&B ---
+            cpu_imgs_hwc = []
+            for img_chw in cpu_imgs_chw:
+                img_chw = img_chw.detach().cpu()
+                if img_chw.ndim == 3:
+                    if img_chw.shape[0] in (1, 3):
+                        img_hwc = img_chw.permute(1, 2, 0).numpy()
+                        if img_hwc.shape[-1] == 1:
+                            img_hwc = np.repeat(img_hwc, 3, axis=-1)
+                    else:
+                        img_hwc = img_chw.numpy()
+                elif img_chw.ndim == 2:
+                    img_hwc = img_chw.numpy()
+                else:
+                    raise ValueError(f"Unexpected image shape: {img_chw.shape}")
+                cpu_imgs_hwc.append(img_hwc)
+
+            self.log_image(key, cpu_imgs_hwc, captions=captions)
                 
-                output = output / output.max()
-                target = target / target.max()
-                error = error / error.max()
-
-                # for converting error to a heatmap
-                cm = plt.get_cmap('summer')
-                error_colored = cm(error.squeeze().detach().cpu().numpy())[:, :, :3]  # H, W, 3
-                error = torch.from_numpy(error_colored).permute(2, 0, 1).float()  # 3, H, W
-
-                # print('debug: ', target.shape, output.shape, error.shape)
-                # self.log_image(f"{key}/target", [target]) #.cpu().numpy().transpose(1,2,0)])
-                # self.log_image(f"{key}/reconstruction", [output])#.cpu().numpy().transpose(1,2,0)])
-                # self.log_image(f"{key}/error", [error]) #.cpu().numpy().transpose(1,2,0)])
-                ##* adjust contrast, make it bright
-                ##* add mask display
-                # print('debug: ', mask.shape, target.shape, output.shape, error.shape)
-                alpha = 0.2
-                cpu_imgs = [t.detach().cpu() for t in (mask, sens_maps, img_zf**alpha, output**alpha, target**alpha, error)]
-                self.log_image(key, cpu_imgs, captions=['mask','sens_maps','zf','reconstruction','target','error'])
-                # self.log_image(key, [ mask, sens_maps, img_zf**alpha,output**alpha, target**alpha,error], captions=[ 'mask','sens_maps','zf', 'reconstruction', 'target','error']) #.cpu().numpy().transpose(1,2,0)])
-
-                # print('debug: ', len(self.validation_step_outputs), target.device, target.shape)
 
         # compute evaluation metrics
         mse_vals = defaultdict(dict)
@@ -220,13 +276,6 @@ class MriModule(L.LightningModule):
         gc.collect()
         # ──────────────────────────────────────────────────────────
          
-        # return {
-        #     "val_loss": val_logs["loss"],
-        #     "mse_vals": dict(mse_vals),
-        #     "target_norms": dict(target_norms),
-        #     "ssim_vals": dict(ssim_vals),
-        #     "max_vals": max_vals,
-        # }
 
     def log_image(self, key, images, captions):
         # tensorboard
@@ -248,18 +297,9 @@ class MriModule(L.LightningModule):
         target_norms = defaultdict(dict)
         ssim_vals = defaultdict(dict)
         max_vals = dict()
-        # print('debug len: ', len(self.validation_step_outputs))
-        # print('debug: val_loss tensor:', self.validation_step_outputs)   
-        # use dict updates to handle duplicate slices
+
         for val_log in self.validation_step_outputs:
-            # print('debug len: ', len(val_log))
-            # print('debug: val_loss tensor:', val_log)
-            # print('debug: val_loss tensor:', val_log["val_loss"])
-            # print('debug: Type of val_loss:', type(val_log["val_loss"]))
-            # print('debug: Shape of val_loss:', val_log["val_loss"].shape)
-
             losses.append(val_log["val_loss"].view(-1))
-
             for k in val_log["mse_vals"].keys():
                 mse_vals[k].update(val_log["mse_vals"][k])
             for k in val_log["target_norms"].keys():
@@ -268,8 +308,7 @@ class MriModule(L.LightningModule):
                 ssim_vals[k].update(val_log["ssim_vals"][k])
             for k in val_log["max_vals"]:
                 max_vals[k] = val_log["max_vals"][k]
-        # print('debug val len: ', len(losses))
-        # check to make sure we have all files in all metrics
+
         assert (
             mse_vals.keys()
             == target_norms.keys()
@@ -282,7 +321,6 @@ class MriModule(L.LightningModule):
         local_examples = 0
         for fname in mse_vals.keys():
             local_examples = local_examples + 1
-            # print('debug fname: ', torch.cat([v.view(-1) for _, v in mse_vals[fname].items()]).shape, fname)
             mse_val = torch.mean(
                 torch.cat([v.view(-1) for _, v in mse_vals[fname].items()])
             )
@@ -319,8 +357,7 @@ class MriModule(L.LightningModule):
 
         for metric, value in metrics.items():
             self.log(f"val_metrics/{metric}", (value / tot_examples).detach().cpu().item(), sync_dist=True)
-
-        # print('debug epoch end: ', len(self.validation_step_outputs), metrics["ssim"]/tot_examples, tot_examples)
+                        
         self.validation_step_outputs.clear()
 
 

@@ -9,7 +9,6 @@ from pathlib import Path
 from typing import Dict, Optional
 
 import h5py
-import hdf5storage
 import numpy as np
 from skimage.metrics import peak_signal_noise_ratio, structural_similarity
 from multiprocessing import Pool
@@ -112,12 +111,8 @@ def save_reconstructions(reconstructions: Dict[str, np.ndarray], num_slc_dict, o
         if fname in num_slc_dict:
             t_z, h, w = recons.shape
             recons = recons.reshape(t_z//num_slc_dict[fname], num_slc_dict[fname], h, w)
-        # with h5py.File(file_path, "w") as hf:
-        #     hf.create_dataset("reconstruction", data=recons)
-
-        hdf5storage.write({'reconstruction': recons},
-                filename=file_path,
-                matlab_compatible=True)
+        with h5py.File(file_path, "w") as hf:
+            hf.create_dataset("reconstruction", data=recons)
 
 def loadmat_group(group):
     """
@@ -159,11 +154,20 @@ def load_shape(filename):
     """
     Load the shape of a .mat file.
     """
-    with h5py.File(filename, 'r') as hf:
-        key = list(hf.keys())[0]
-        shape = hf[key].shape
-    return shape
-
+    try:
+        with h5py.File(filename, 'r') as hf:
+            key = list(hf.keys())[0]
+            shape = hf[key].shape
+        return shape
+    
+    except (OSError, IOError):
+        # Fallback to the old MATLAB format
+        raw = spio.loadmat(filename)
+        # strip out MATLAB metadata keys
+        data = {k: v for k, v in raw.items() if not k.startswith('__')}
+        key = next(iter(data))
+        return data[key].shape
+        
 def load_mask(filename):
     """
     Load a mask from a .mat file.

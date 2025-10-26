@@ -2,7 +2,7 @@ data:
   class_path: pl_modules.InferenceDataModule
   init_args:
     slice_dataset: data.CmrxReconInferenceSliceDataset
-    data_path: /home/nicocarp/scratch/VSSD-Recon/raw_datasets/MICCAIChallenge2025/ChallengeDataValSet/TaskR1
+    data_path: /home/nicocarp/scratch/VSSD-Recon/raw_datasets/MICCAIChallenge2025/ChallengeDataValSet/TaskR2
     challenge: multicoil
     test_transform:
       class_path: data.CmrxReconDataTransform
@@ -34,9 +34,9 @@ trainer:
     -
       class_path: __main__.CustomWriter
       init_args:
-        output_dir: /home/nicocarp/scratch/VSSD-Recon/predict/cmr25-cardiac/test_VSSD-Recon_R1
+        output_dir: /home/nicocarp/scratch/VSSD-Recon/predict/cmr25-cardiac/test_VSSD-Recon_R2
         write_interval: batch_and_epoch
 model:
   class_path: pl_modules.PromptMrModule
 
-ckpt_path: /home/nicocarp/scratch/VSSD-Recon/scripts/exp/cmr25-cardiac/VSSD-Recon/deep_recon/7mnx88lt/checkpoints/last.ckpt
+ckpt_path: /home/nicocarp/scratch/VSSD-Recon/scripts/exp/cmr25-cardiac/VSSD-Recon/deep_recon/vxna0qyw/checkpoints/last.ckpt

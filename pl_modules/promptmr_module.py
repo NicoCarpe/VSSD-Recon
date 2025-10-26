@@ -7,6 +7,8 @@ from mri_utils import SSIMLoss
 import torch.nn.functional as F
 import importlib
 
+from mri_utils import ifft2c, rss, complex_abs, rss_complex, sens_expand, sens_reduce
+
 def get_model_class(module_name, class_name="PromptMR"):
     """
     Dynamically imports the specified module and retrieves the class.
@@ -50,7 +52,7 @@ class PromptMrModule(MriModule):
         n_history:              int = 0,
         use_sens_adj:           bool = True,
         dropout:                float = 0.,
-        model_version:          str = "vssd_recon",
+        model_version:          str = "vssd_recon_encode",
         lr:                     float = 0.0002,
         lr_step_size:           int = 11,
         lr_gamma:               float = 0.1,
@@ -97,7 +99,7 @@ class PromptMrModule(MriModule):
         """
         super().__init__(**kwargs)
         self.save_hyperparameters()
-
+        
         self.num_cascades = num_cascades
         self.num_adj_slices = num_adj_slices
 
@@ -189,16 +191,11 @@ class PromptMrModule(MriModule):
     #         except Exception as e:
     #             self.print(f"FLOP counting failed: {e}")
 
-    def forward(self, masked_kspace, mask, num_low_frequencies, mask_type, use_checkpoint=False, compute_sens_per_coil=False):
-        # mask_type = ["uniform", "kt_radial", "kt_gaussian"][mask_type]
-
-        return self.promptmr(masked_kspace, mask, num_low_frequencies, mask_type, use_checkpoint=use_checkpoint, compute_sens_per_coil=compute_sens_per_coil)   
+    def forward(self, masked_kspace, mask, num_low_frequencies, mask_type, use_checkpoint=False, compute_sens_per_coil=False, collect_logs=False):
+        return self.promptmr(masked_kspace, mask, num_low_frequencies, mask_type, use_checkpoint=use_checkpoint, compute_sens_per_coil=compute_sens_per_coil, collect_logs=collect_logs)   
 
 
     def training_step(self, batch, batch_idx):
-        # mask_type = int(batch.mask_type.item())
-        # max_value = float(batch.max_value.item())
-
         output_dict = self(batch.masked_kspace, batch.mask, batch.num_low_frequencies, batch.mask_type, 
                            use_checkpoint=self.use_checkpoint, compute_sens_per_coil=self.compute_sens_per_coil)
         output = output_dict['img_pred']
@@ -218,45 +215,49 @@ class PromptMrModule(MriModule):
 
 
     def validation_step(self, batch, batch_idx):
-        # mask_type = int(batch.mask_type.item())
-        # max_value     = float(batch.max_value.item())
-        # slice_num     = int(batch.slice_num.item())
-        # fname         = int(batch.fname.item())
-            
-        output_dict = self(batch.masked_kspace, batch.mask, batch.num_low_frequencies, batch.mask_type,
-                           compute_sens_per_coil=self.compute_sens_per_coil)
+        # Forward pass
+        output_dict = self(
+            batch.masked_kspace, 
+            batch.mask, 
+            batch.num_low_frequencies, 
+            batch.mask_type,
+            compute_sens_per_coil=self.compute_sens_per_coil, 
+            collect_logs=True
+        )
 
         output = output_dict['img_pred']
         img_zf = output_dict['img_zf']
-        target, output = transforms.center_crop_to_smallest(
-            batch.target, output)
-        _, img_zf = transforms.center_crop_to_smallest(
-            batch.target, img_zf)
+        target, output = transforms.center_crop_to_smallest(batch.target, output)
+        _, img_zf = transforms.center_crop_to_smallest(batch.target, img_zf)
+
+        # Compute loss
         val_loss = self.loss(
-                output.unsqueeze(1), target.unsqueeze(1), data_range=batch.max_value
-            )
+            output.unsqueeze(1), 
+            target.unsqueeze(1), 
+            data_range=batch.max_value
+        )
+
+        # Prepare visualizations
         cc = batch.masked_kspace.shape[1]
-        centered_coil_visual = torch.log(1e-10+torch.view_as_complex(batch.masked_kspace[:,cc//2]).abs())
-            
+        centered_coil_visual = torch.log(1e-10 + torch.view_as_complex(batch.masked_kspace[:, cc//2]).abs())
+
+        logs = output_dict.get('logs', None)
+
         return {
             "batch_idx": batch_idx,
             "fname": batch.fname,
             "slice_num": batch.slice_num,
             "max_value": batch.max_value,
-            "img_zf":   img_zf,
-            "mask": centered_coil_visual, 
-            "sens_maps": output_dict['sens_maps'][:,0].abs(),
+            "img_zf": img_zf,
+            "mask": centered_coil_visual,
+            "sens_maps": output_dict['sens_maps'][:, 0].abs(),
             "output": output,
             "target": target,
             "loss": val_loss,
+            "logs": logs,
         }
 
     def predict_step(self, batch, batch_idx, dataloader_idx=0):
-        # mask_type   = int(batch.mask_type.item())
-        # fname           = int(batch.fname.item())
-        # slice_num       = int(batch.slice_num.item())
-        # num_slc         = int(batch.num_slc.item())
-
         output_dict = self(batch.masked_kspace, batch.mask, batch.num_low_frequencies, batch.mask_type,
                            compute_sens_per_coil=self.compute_sens_per_coil)
         

@@ -4,8 +4,8 @@ data:
     slice_dataset: data.CmrxReconSliceDataset
     data_path: /home/nicocarp/scratch/VSSD-Recon/mridatasets/cmrxrecon2025
     challenge: multicoil
-    sample_rate: 0.25
-    val_sample_rate: 0.25
+    sample_rate: 0.10
+    val_sample_rate: 0.10
     train_transform:
       class_path: data.CmrxReconDataTransform
       init_args:
@@ -31,7 +31,7 @@ data:
     combine_train_val: false
     num_adj_slices: *num_adj_slices
     batch_size: 1
-    num_workers: 6
+    num_workers: 4
     distributed_sampler: true  
     use_dataset_cache_file: false
 
@@ -40,7 +40,7 @@ trainer:
   strategy: ddp
   devices: 4
   num_nodes: 1
-  max_epochs: 12
+  max_epochs: 50
   logger:
     class_path: lightning.pytorch.loggers.WandbLogger
     init_args:

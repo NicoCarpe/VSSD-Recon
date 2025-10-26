@@ -39,4 +39,4 @@ trainer:
 model:
   class_path: pl_modules.PromptMrModule
 
-ckpt_path: /app/checkpoints/last.ckpt
+ckpt_path: ./checkpoints/last.ckpt

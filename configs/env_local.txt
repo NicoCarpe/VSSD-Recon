@@ -43,6 +43,7 @@ pytz==2025.2+computecanada
 requests==2.32.3+computecanada
 safetensors==0.4.5+computecanada
 scikit_image==0.24.0+computecanada
+seaborn==0.13.2+computecanada
 scipy==1.15.1+computecanada
 six==1.17.0+computecanada
 sympy==1.13.1+computecanada

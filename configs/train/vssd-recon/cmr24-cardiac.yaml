@@ -4,8 +4,8 @@ data:
     slice_dataset: data.CmrxReconSliceDataset
     data_path: /home/nicocarp/scratch/VSSD-Recon/mridatasets/cmrxrecon2024
     challenge: multicoil
-    sample_rate: 0.01
-    val_sample_rate: 0.01
+    # sample_rate: 0.01
+    # val_sample_rate: 0.01
     # data_balancer:
     #   class_path: data.BalanceSampler
     #   init_args: 
@@ -19,8 +19,7 @@ data:
         mask_func:
           class_path: data.CmrxRecon24MaskFunc
           init_args:
-            num_low_frequencies: 
-            - 20
+            num_low_frequencies: [20]
             num_adj_slices: &num_adj_slices 5
             mask_path: /home/nicocarp/scratch/VSSD-Recon/mridatasets/cmrxrecon2024/mask/mask_radial.h5
         uniform_resolution: null
@@ -31,12 +30,11 @@ data:
         mask_func:
           class_path: data.CmrxRecon24MaskFunc
           init_args:
-            num_low_frequencies: 
-            - 20
+            num_low_frequencies: [20]
             num_adj_slices: *num_adj_slices
             mask_path: /home/nicocarp/scratch/VSSD-Recon/mridatasets/cmrxrecon2024/mask/mask_radial.h5
         uniform_resolution: null
-        use_seed: True
+        use_seed: true
     combine_train_val: false
     num_adj_slices: *num_adj_slices
     batch_size: 1
@@ -46,15 +44,11 @@ data:
 
 # dataset specific settings
 trainer:
+  accelerator: gpu
   strategy: ddp
   devices: 4
   num_nodes: 1
-  max_epochs: 20
-  # NOTE: 16-mixed precision is not precise enough
-  # precision: bf16-mixed
-  # NOTE: probably don't want to have accumulate grad batches due to the heterogeneity of our dataset
-  # accumulate_grad_batches: 2  # Real batch size is accum * batch_size, real steps/"epoch" is epoch_size / accum
-
+  max_epochs: 50
   logger: 
     class_path: lightning.pytorch.loggers.WandbLogger
     init_args:

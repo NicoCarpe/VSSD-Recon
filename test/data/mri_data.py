@@ -5,8 +5,6 @@ import logging
 import os
 import pickle
 import random
-import csv
-import xml.etree.ElementTree as etree
 from pathlib import Path
 from typing import (
     Any,
@@ -433,28 +431,9 @@ class CmrxReconInferenceSliceDataset(torch.utils.data.Dataset):
         # get all the kspace mat files from root, under folder or its subfolders
         volume_paths = root.glob('**/*.mat')
 
-        if '2025' in str(self.root):
-            self.year = 2025 
-        elif '2024' in str(self.root):
-            self.year = 2024
-        elif '2023' in str(self.root):
-            self.year = 2023
-        else:
-            raise ValueError('Invalid dataset root')
-        
-        if self.year == 2025:
-            self.volume_paths = [str(path) for path in volume_paths if '_mask_' not in str(path)]
-            
-        elif self.year == 2024:
-            self.volume_paths = [str(path) for path in volume_paths if '_mask_' not in str(path)]
-        
-        elif self.year == 2023:
-            # filter out files contains '_mask.mat'
-            self.volume_paths = [str(path) for path in volume_paths if '_mask.mat' not in str(path)]
-        
+        self.volume_paths = [str(path) for path in volume_paths if '_mask_' not in str(path)]
         self.volume_paths = [pp for pp in self.volume_paths if raw_sample_filter(pp)]
         print('number of inference paths: ', len(self.volume_paths))
-            
 
         self.transform = transform
         
@@ -539,107 +518,47 @@ class CmrxReconInferenceSliceDataset(torch.utils.data.Dataset):
             # BlackBlood, T1w, T2w → add time dim
             kspace_volume = kspace_volume[None, ...]
 
-        # --- YEAR-SPECIFIC MASK LOGIC ---
-        if self.year == 2025:
-            mask_path = path.replace('UnderSample_Task', 'Mask_Task') \
-                            .replace('_kus_', '_mask_')
-            raw_mask = load_mask(mask_path)  # may be 2D (nx,ny) or 3D (nt,nx,ny)
-            if raw_mask.ndim == 3:
-                # dynamic mask: ((nt, ny, nx, nt) → (nt, ny, nx, 1)
-                mask = raw_mask[..., None]
-            elif raw_mask.ndim == 2:
-                # static mask: (ny, nx) → (1, ny, nx, 1)
-                mask = raw_mask[None, ..., None]
-            else:
-                raise ValueError(f"Unexpected mask ndim={raw_mask.ndim} for {mask_path}")
-
-        elif self.year == 2024:
-            mask_path = path.replace('UnderSample_Task', 'Mask_Task') \
-                            .replace('_kus_', '_mask_')
-            if 'UnderSample_Task1' in path:
-                mask = load_mask(mask_path)
-                mask = mask[None, ..., None]
-            else:
-                mask = load_mask(mask_path)
-                mask = mask[..., None]
-
-        elif self.year == 2023:
-            mask_path = path.replace('.mat', '_mask.mat')
-            mask = load_mask(mask_path)
-            mask = mask[None, ..., None]
-            
+        mask_path = path.replace('UnderSample_Task', 'Mask_Task') \
+                        .replace('_kus_', '_mask_')
+        raw_mask = load_mask(mask_path)  # may be 2D (nx,ny) or 3D (nt,nx,ny)
+        if raw_mask.ndim == 3:
+            # dynamic mask: ((nt, ny, nx, nt) → (nt, ny, nx, 1)
+            mask = raw_mask[..., None]
+        elif raw_mask.ndim == 2:
+            # static mask: (ny, nx) → (1, ny, nx, 1)
+            mask = raw_mask[None, ..., None]
         else:
-            raise ValueError(f"Unsupported year: {self.year}")
+            raise ValueError(f"Unexpected mask ndim={raw_mask.ndim} for {mask_path}")
 
         # --- BUILD attrs ---
-        if self.year == 2025:
-            # pull out path info
-            center  = p.parts[-4]
-            machine = p.parts[-3]
-            patient = p.parts[-2]
-            ftype   = p.stem  # e.g. "P001_kus_…"
+        center  = p.parts[-4]
+        machine = p.parts[-3]
+        patient = p.parts[-2]
+        ftype   = p.stem  # e.g. "P001_kus_…"
 
-            # compute img_rss to match your H5‐prep script
-            # 2025 data stored in complex128 so needs to be downcast
-            kspace_volume = kspace_volume.astype(np.complex64)
-            k_t      = to_tensor(kspace_volume)
-            img_coil = ifft2c(k_t)
-            img_rss  = rss_complex(img_coil, dim=-3).cpu().numpy()
+        # compute img_rss to match your H5‐prep script
+        # 2025 data stored in complex128 so needs to be downcast
+        kspace_volume = kspace_volume.astype(np.complex64)
+        k_t      = to_tensor(kspace_volume)
+        img_coil = ifft2c(k_t)
+        img_rss  = rss_complex(img_coil, dim=-3).cpu().numpy()
 
-            # base attrs
-            attrs = {
-                'max':           float(img_rss.max()),
-                'norm':          float(np.linalg.norm(img_rss)),
-                'acquisition':   ftype,
-                'shape':         kspace_volume.shape,
-                'padding_left':  0,
-                'padding_right': kspace_volume.shape[-1],
-                'encoding_size': (kspace_volume.shape[-2],
-                                  kspace_volume.shape[-1], 1),
-                'recon_size':    (kspace_volume.shape[-2],
-                                  kspace_volume.shape[-1], 1),
-                'patient_id':    patient,
-                'machine':       machine,
-                'center':        center,
-            }
-
-            # # replace "kus_" suffix with "info.csv"
-            # prefix    = p.name.split('kus_')[0]
-            # info_path = p.with_name(f"{prefix}info.csv")
-            # if info_path.is_file():
-            #     with open(info_path, newline='') as csvfile:
-            #         reader = csv.DictReader(csvfile)
-            #         for row in reader:
-            #             key     = (row.get('Parameter')
-            #                        or row.get(reader.fieldnames[0], '')).strip()
-            #             val_str = (row.get('Value')
-            #                        or row.get(reader.fieldnames[1], '')).strip()
-            #             if not key or not val_str:
-            #                 continue
-            #             try:
-            #                 val = float(val_str)
-            #             except ValueError:
-            #                 val = val_str
-            #             attrs[key] = val
-            # else:
-            #     print(f"Warning: info CSV not found at {info_path}", flush=True)
-
-        else:
-            # 2023 & 2024: minimal attrs as in your original inference
-            attrs = {
-                'encoding_size': [
-                    kspace_volume.shape[3],
-                    kspace_volume.shape[4],
-                    1
-                ],
-                'padding_left':  0,
-                'padding_right': kspace_volume.shape[-1],
-                'recon_size':    [
-                    kspace_volume.shape[3],
-                    kspace_volume.shape[4],
-                    1
-                ],
-            }
+        # base attrs
+        attrs = {
+            'max':           float(img_rss.max()),
+            'norm':          float(np.linalg.norm(img_rss)),
+            'acquisition':   ftype,
+            'shape':         kspace_volume.shape,
+            'padding_left':  0,
+            'padding_right': kspace_volume.shape[-1],
+            'encoding_size': (kspace_volume.shape[-2],
+                                kspace_volume.shape[-1], 1),
+            'recon_size':    (kspace_volume.shape[-2],
+                                kspace_volume.shape[-1], 1),
+            'patient_id':    patient,
+            'machine':       machine,
+            'center':        center,
+        }
 
         return kspace_volume, mask, attrs
     
@@ -682,12 +601,9 @@ class CmrxReconInferenceSliceDataset(torch.utils.data.Dataset):
         
         _path = self.current_path.replace(str(self.root)+'/', '')
         # gather mask data for adjacent slices
-        if self.year==2023 or (self.year==2024 and 'UnderSample_Task1' in _path): 
-            mask = self.mask
-        else:
-            mask = [self.mask[idx] for idx in ti_idx_list]
-            mask = np.stack(mask, axis=0)
-            mask = mask.repeat(nc, axis=0)
+        mask = [self.mask[idx] for idx in ti_idx_list]
+        mask = np.stack(mask, axis=0)
+        mask = mask.repeat(nc, axis=0)
 
         # Prepare the sample
         if self.transform is None:
@@ -706,435 +622,3 @@ class CmrxReconInferenceSliceDataset(torch.utils.data.Dataset):
 
 
         
-
-#########################################################################################################
-# Calgary-Campinas dataset
-#########################################################################################################
-
-class CalgaryCampinasSliceDataset(torch.utils.data.Dataset):
-    """
-    A PyTorch Dataset for the Calgary-Campinas dataset.
-    """
-
-    def __init__(
-        self,
-        root: Union[str, Path, os.PathLike],
-        challenge: str,
-        transform: Optional[Callable] = None,
-        use_dataset_cache: bool = False,
-        sample_rate: Optional[float] = None,
-        volume_sample_rate: Optional[float] = None,
-        dataset_cache_file: Union[str, Path, os.PathLike] = "dataset_cache.pkl",
-        num_cols: Optional[Tuple[int]] = None,
-        raw_sample_filter: Optional[Callable] = None,
-        data_balancer: Optional[Callable] = None,
-        num_adj_slices: int = 5
-    ):
-        """
-        Args:
-            root: Path to the dataset.
-            challenge: "singlecoil" or "multicoil" depending on which challenge
-                to use.
-            transform: Optional; A callable object that pre-processes the raw
-                data into appropriate form. The transform function should take
-                'kspace', 'target', 'attributes', 'filename', and 'slice' as
-                inputs. 'target' may be null for test data.
-            use_dataset_cache: Whether to cache dataset metadata. This is very
-                useful for large datasets like the brain data.
-            sample_rate: Optional; A float between 0 and 1. This controls what fraction
-                of the slices should be loaded. Defaults to 1 if no value is given.
-                When creating a sampled dataset either set sample_rate (sample by slices)
-                or volume_sample_rate (sample by volumes) but not both.
-            volume_sample_rate: Optional; A float between 0 and 1. This controls what fraction
-                of the volumes should be loaded. Defaults to 1 if no value is given.
-                When creating a sampled dataset either set sample_rate (sample by slices)
-                or volume_sample_rate (sample by volumes) but not both.
-            dataset_cache_file: Optional; A file in which to cache dataset
-                information for faster load times.
-            num_cols: Optional; If provided, only slices with the desired
-                number of columns will be considered.
-            raw_sample_filter: Optional; A callable object that takes an raw_sample
-                metadata as input and returns a boolean indicating whether the
-                raw_sample should be included in the dataset.
-        """
-        assert num_adj_slices % 2 == 1, "Number of adjacent slices must be odd in SliceDataset"
-        self.num_adj_slices = num_adj_slices
-        self.start_adj, self.end_adj = -(self.num_adj_slices//2), self.num_adj_slices//2+1
-
-        if challenge not in ("singlecoil", "multicoil"):
-            raise ValueError(
-                'challenge should be either "singlecoil" or "multicoil"')
-
-        if sample_rate is not None and volume_sample_rate is not None:
-            raise ValueError(
-                "either set sample_rate (sample by slices) or volume_sample_rate (sample by volumes) but not both"
-            )
-
-        self.dataset_cache_file = Path(dataset_cache_file)
-
-        self.transform = transform
-        
-        self.data_balancer = data_balancer
-
-        assert num_adj_slices % 2 == 1, "Number of adjacent slices must be odd in SliceDataset"
-        self.num_adj_slices = num_adj_slices
-
-        self.recons_key = (
-            "reconstruction_esc" if challenge == "singlecoil" else "reconstruction_rss"
-        )
-        self.raw_samples = []
-        if raw_sample_filter is None:
-            self.raw_sample_filter = lambda raw_sample: True
-        else:
-            self.raw_sample_filter = raw_sample_filter
-
-        # set default sampling mode if none given
-        if sample_rate is None:
-            sample_rate = 1.0
-        if volume_sample_rate is None:
-            volume_sample_rate = 1.0
-
-        # load dataset cache if we have and user wants to use it
-        if self.dataset_cache_file.exists() and use_dataset_cache:
-            with open(self.dataset_cache_file, "rb") as f:
-                dataset_cache = pickle.load(f)
-        else:
-            dataset_cache = {}
-
-        # check if our dataset is in the cache
-        # if there, use that metadata, if not, then regenerate the metadata
-        if dataset_cache.get(root) is None or not use_dataset_cache:
-            files = list(Path(root).iterdir())
-
-            for fname in sorted(files):
-                with h5py.File(fname, 'r') as hf:
-                    num_slices = hf["kspace"].shape[0]
-                    metadata = {**hf.attrs}
-                new_raw_samples = []
-
-                # * for validation set, only use the middle slices
-                if '/val' in str(root):
-                    slice_range = range(50, num_slices-50)
-                else:
-                    slice_range = range(0, num_slices)
-
-                for slice_ind in slice_range:  # range(num_slices):
-                    raw_sample = RawDataSample(fname, slice_ind, metadata)
-                    if self.raw_sample_filter(raw_sample):
-                        new_raw_samples.append(raw_sample)
-                self.raw_samples += new_raw_samples
-
-            if dataset_cache.get(root) is None and use_dataset_cache:
-                dataset_cache[root] = self.raw_samples
-                logging.info(
-                    "Using dataset cache to %s.", self.dataset_cache_file)
-                with open(self.dataset_cache_file, "wb") as cache_f:
-                    pickle.dump(dataset_cache, cache_f)
-        else:
-            logging.info(
-                "Using dataset cache from %s.", self.dataset_cache_file)
-            self.raw_samples = dataset_cache[root]
-
-        # subsample if desired
-        if sample_rate < 1.0:  # sample by slice
-            random.shuffle(self.raw_samples)
-            num_raw_samples = round(len(self.raw_samples) * sample_rate)
-            self.raw_samples = self.raw_samples[:num_raw_samples]
-        elif volume_sample_rate < 1.0:  # sample by volume
-            vol_names = sorted(
-                list(set([f[0].stem for f in self.raw_samples])))
-            random.shuffle(vol_names)
-            num_volumes = round(len(vol_names) * volume_sample_rate)
-            sampled_vols = vol_names[:num_volumes]
-            self.raw_samples = [
-                raw_sample
-                for raw_sample in self.raw_samples
-                if raw_sample[0].stem in sampled_vols
-            ]
-
-        if num_cols:
-            self.raw_samples = [
-                ex
-                for ex in self.raw_samples
-                if ex[2]["encoding_size"][1] in num_cols  # type: ignore
-            ]
-        print('debug dataset: ', len(self.raw_samples))
-
-    def __len__(self):
-        return len(self.raw_samples)
-
-    def _get_frames_indices(self, data_slice, num_slices):
-        z_list = [min(max(i+data_slice, 0), num_slices-1)
-                  for i in range(self.start_adj, self.end_adj)]
-        return z_list
-
-    def __getitem__(self, i: int):
-        fname, dataslice, metadata = self.raw_samples[i]
-
-        kspace = []
-        with h5py.File(fname, "r") as hf:
-            num_slices = hf["kspace"].shape[0]
-            slice_idx_list = self._get_frames_indices(dataslice, num_slices)
-            for slice_idx in slice_idx_list:
-                kspace.append(hf["kspace"][slice_idx])
-            kspace = np.concatenate(kspace, axis=0)
-
-            mask = np.asarray(hf["mask"]) if "mask" in hf else None
-
-            target = hf[self.recons_key][dataslice] if self.recons_key in hf else None
-
-            attrs = dict(hf.attrs)
-            attrs.update(metadata)
-
-        if self.transform is None:
-            sample = (kspace, mask, target, attrs, fname.name, dataslice)
-        else:
-            sample = self.transform(
-                kspace, mask, target, attrs, fname.name, dataslice)
-
-        return sample
-
-#########################################################################################################
-# fastmri part
-#########################################################################################################
-
-
-def et_query(
-    root: etree.Element,
-    qlist: Sequence[str],
-    namespace: str = "http://www.ismrm.org/ISMRMRD",
-) -> str:
-    """
-    ElementTree query function.
-
-    This can be used to query an xml document via ElementTree. It uses qlist
-    for nested queries.
-
-    Args:
-        root: Root of the xml to search through.
-        qlist: A list of strings for nested searches, e.g. ["Encoding",
-            "matrixSize"]
-        namespace: Optional; xml namespace to prepend query.
-
-    Returns:
-        The retrieved data as a string.
-    """
-    s = "."
-    prefix = "ismrmrd_namespace"
-
-    ns = {prefix: namespace}
-
-    for el in qlist:
-        s = s + f"//{prefix}:{el}"
-
-    value = root.find(s, ns)
-    if value is None:
-        raise RuntimeError("Element not found")
-
-    return str(value.text)
-
-
-class FastmriSliceDataset(torch.utils.data.Dataset):
-    """
-    A PyTorch Dataset that provides access to MR image slices.
-    """
-
-    def __init__(
-        self,
-        root: Union[str, Path, os.PathLike],
-        challenge: str,
-        transform: Optional[Callable] = None,
-        use_dataset_cache: bool = False,
-        sample_rate: Optional[float] = None,
-        volume_sample_rate: Optional[float] = None,
-        dataset_cache_file: Union[str, Path, os.PathLike] = "dataset_cache.pkl",
-        num_cols: Optional[Tuple[int]] = None,
-        raw_sample_filter: Optional[Callable] = None,
-        data_balancer: Optional[Callable] = None,
-        num_adj_slices: int = 3
-    ):
-        """
-        Args:
-            root: Path to the dataset.
-            challenge: "singlecoil" or "multicoil" depending on which challenge
-                to use.
-            transform: Optional; A callable object that pre-processes the raw
-                data into appropriate form. The transform function should take
-                'kspace', 'target', 'attributes', 'filename', and 'slice' as
-                inputs. 'target' may be null for test data.
-            use_dataset_cache: Whether to cache dataset metadata. This is very
-                useful for large datasets like the brain data.
-            sample_rate: Optional; A float between 0 and 1. This controls what fraction
-                of the slices should be loaded. Defaults to 1 if no value is given.
-                When creating a sampled dataset either set sample_rate (sample by slices)
-                or volume_sample_rate (sample by volumes) but not both.
-            volume_sample_rate: Optional; A float between 0 and 1. This controls what fraction
-                of the volumes should be loaded. Defaults to 1 if no value is given.
-                When creating a sampled dataset either set sample_rate (sample by slices)
-                or volume_sample_rate (sample by volumes) but not both.
-            dataset_cache_file: Optional; A file in which to cache dataset
-                information for faster load times.
-            num_cols: Optional; If provided, only slices with the desired
-                number of columns will be considered.
-            raw_sample_filter: Optional; A callable object that takes an raw_sample
-                metadata as input and returns a boolean indicating whether the
-                raw_sample should be included in the dataset.
-        """
-
-        assert num_adj_slices % 2 == 1, "Number of adjacent slices must be odd in SliceDataset"
-        self.num_adj_slices = num_adj_slices
-        self.start_adj, self.end_adj = - \
-            (self.num_adj_slices//2), self.num_adj_slices//2+1
-
-        if challenge not in ("singlecoil", "multicoil"):
-            raise ValueError(
-                'challenge should be either "singlecoil" or "multicoil"')
-
-        if sample_rate is not None and volume_sample_rate is not None:
-            raise ValueError(
-                "either set sample_rate (sample by slices) or volume_sample_rate (sample by volumes) but not both"
-            )
-
-        self.dataset_cache_file = Path(dataset_cache_file)
-
-        self.transform = transform
-        self.data_balancer = data_balancer
-        self.recons_key = (
-            "reconstruction_esc" if challenge == "singlecoil" else "reconstruction_rss"
-        )
-        self.raw_samples = []
-        if raw_sample_filter is None:
-            self.raw_sample_filter = lambda raw_sample: True
-        else:
-            self.raw_sample_filter = raw_sample_filter
-
-        # set default sampling mode if none given
-        if sample_rate is None:
-            sample_rate = 1.0
-        if volume_sample_rate is None:
-            volume_sample_rate = 1.0
-
-        # load dataset cache if we have and user wants to use it
-        if self.dataset_cache_file.exists() and use_dataset_cache:
-            with open(self.dataset_cache_file, "rb") as f:
-                dataset_cache = pickle.load(f)
-        else:
-            dataset_cache = {}
-
-        # check if our dataset is in the cache
-        # if there, use that metadata, if not, then regenerate the metadata
-        if dataset_cache.get(root) is None or not use_dataset_cache:
-            files = list(Path(root).iterdir())
-            for fname in sorted(files):
-                metadata, num_slices = self._retrieve_metadata(fname)
-                new_raw_samples = []
-                for slice_ind in range(num_slices):
-                    raw_sample = RawDataSample(fname, slice_ind, metadata)
-                    if self.raw_sample_filter(raw_sample):
-                        new_raw_samples.append(raw_sample)
-
-                self.raw_samples += new_raw_samples
-
-            if dataset_cache.get(root) is None and use_dataset_cache:
-                dataset_cache[root] = self.raw_samples
-                logging.info(
-                    "Using dataset cache to %s.", self.dataset_cache_file)
-                with open(self.dataset_cache_file, "wb") as cache_f:
-                    pickle.dump(dataset_cache, cache_f)
-        else:
-            logging.info(
-                "Using dataset cache from %s.", self.dataset_cache_file)
-            self.raw_samples = dataset_cache[root]
-
-        # subsample if desired
-        if sample_rate < 1.0:  # sample by slice
-            random.shuffle(self.raw_samples)
-            num_raw_samples = round(len(self.raw_samples) * sample_rate)
-            self.raw_samples = self.raw_samples[:num_raw_samples]
-        elif volume_sample_rate < 1.0:  # sample by volume
-            vol_names = sorted(
-                list(set([f[0].stem for f in self.raw_samples])))
-            random.shuffle(vol_names)
-            num_volumes = round(len(vol_names) * volume_sample_rate)
-            sampled_vols = vol_names[:num_volumes]
-            self.raw_samples = [
-                raw_sample
-                for raw_sample in self.raw_samples
-                if raw_sample[0].stem in sampled_vols
-            ]
-
-        if num_cols:
-            self.raw_samples = [
-                ex
-                for ex in self.raw_samples
-                if ex[2]["encoding_size"][1] in num_cols  # type: ignore
-            ]
-
-    def _retrieve_metadata(self, fname):
-        with h5py.File(fname, "r") as hf:
-            et_root = etree.fromstring(hf["ismrmrd_header"][()])
-
-            enc = ["encoding", "encodedSpace", "matrixSize"]
-            enc_size = (
-                int(et_query(et_root, enc + ["x"])),
-                int(et_query(et_root, enc + ["y"])),
-                int(et_query(et_root, enc + ["z"])),
-            )
-            rec = ["encoding", "reconSpace", "matrixSize"]
-            recon_size = (
-                int(et_query(et_root, rec + ["x"])),
-                int(et_query(et_root, rec + ["y"])),
-                int(et_query(et_root, rec + ["z"])),
-            )
-
-            lims = ["encoding", "encodingLimits", "kspace_encoding_step_1"]
-            enc_limits_center = int(et_query(et_root, lims + ["center"]))
-            enc_limits_max = int(et_query(et_root, lims + ["maximum"])) + 1
-
-            padding_left = enc_size[1] // 2 - enc_limits_center
-            padding_right = padding_left + enc_limits_max
-
-            num_slices = hf["kspace"].shape[0]
-
-            metadata = {
-                "padding_left": padding_left,
-                "padding_right": padding_right,
-                "encoding_size": enc_size,
-                "recon_size": recon_size,
-                **hf.attrs,
-            }
-
-        return metadata, num_slices
-
-    def __len__(self):
-        return len(self.raw_samples)
-
-    def _get_frames_indices(self, data_slice, num_slices):
-        z_list = [min(max(i+data_slice, 0), num_slices-1)
-                  for i in range(self.start_adj, self.end_adj)]
-        return z_list
-
-    def __getitem__(self, i: int):
-        fname, dataslice, metadata = self.raw_samples[i]
-        kspace = []
-        with h5py.File(fname, "r") as hf:
-            num_slices = hf["kspace"].shape[0]
-            slice_idx_list = self._get_frames_indices(dataslice, num_slices)
-            for slice_idx in slice_idx_list:
-                kspace.append(hf["kspace"][slice_idx])
-            kspace = np.concatenate(kspace, axis=0)
-
-            mask = np.asarray(hf["mask"]) if "mask" in hf else None
-
-            target = hf[self.recons_key][dataslice] if self.recons_key in hf else None
-
-            attrs = dict(hf.attrs)
-            attrs.update(metadata)
-
-        if self.transform is None:
-            sample = (kspace, mask, target, attrs, fname.name, dataslice)
-        else:
-            sample = self.transform(
-                kspace, mask, target, attrs, fname.name, dataslice)
-
-        return sample

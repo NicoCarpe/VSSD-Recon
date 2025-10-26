@@ -171,8 +171,8 @@ class CustomWriter(BasePredictionWriter):
                 [out.cpu() for _, out in sorted(outputs[fname])])
     
         # # Save the reconstructions
-        save_reconstructions(outputs, num_slc_dict, self.output_dir / "reconstructions")
-        print(f"Done! Reconstructions saved to {self.output_dir / 'reconstructions'}")
+        save_reconstructions(outputs, num_slc_dict, self.output_dir / "TaskR1")
+        print(f"Done! Reconstructions saved to {self.output_dir / 'TaskR1'}")
 
 class CustomLightningCLI(LightningCLI):
 

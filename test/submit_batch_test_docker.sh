@@ -1,10 +1,11 @@
 #!/bin/bash -l
-#SBATCH -J VSSD-Recon_preproc
-#SBATCH --time=0-00:30:00
+#SBATCH -J VSSD-Recon_test_docker
+#SBATCH --time=00-00:30:00
 #SBATCH --nodes=1
-#SBATCH --ntasks-per-node=1                
-#SBATCH --cpus-per-task=1                  
-#SBATCH --mem=16GB                                                 
+#SBATCH --ntasks-per-node=1
+#SBATCH --gpus-per-node=h100:1
+#SBATCH --cpus-per-task=6
+#SBATCH --mem=128G
 #SBATCH --account=def-punithak
 #SBATCH --mail-type=BEGIN,END,FAIL
 #SBATCH --mail-user=ngcarpen@ualberta.ca
@@ -36,8 +37,5 @@ python -m pip install --upgrade pip
 python -m pip install --no-index -r $PROJECT_ROOT/configs/env_local.txt
 python -m pip install -r $PROJECT_ROOT/configs/env_pypi.txt
 
-srun python prepare_h5_dataset_cmrxrecon.py \
-    --input_matlab_folder $PROJECT_ROOT/raw_datasets/MICCAIChallenge2024/ChallengeData/MultiCoil \
-    --output_h5_folder $PROJECT_ROOT/mridatasets/cmrxrecon2024/h5_dataset \
-    --split_json $PROJECT_ROOT/configs/data_split/cmr24-cardiac.json \
-    --year 2024
+srun python $PROJECT_ROOT/test/inference.py --input $PROJECT_ROOT/input --output $PROJECT_ROOT/output
+

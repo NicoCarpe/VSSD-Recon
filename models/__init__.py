@@ -1,7 +1,7 @@
 # from .e2e_recon import PromptMR
 # from .swin_recon import PromptMR
 # from .vss_recon import PromptMR
-from .vssd_recon import PromptMR
+from .vssd_recon_encode import PromptMR
 # from .mlla_recon import PromptMR
 
 def count_parameters(model):

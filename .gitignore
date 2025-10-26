@@ -9,3 +9,6 @@
 /pretrained_models/
 /predict/
 .env
+/test/slurm_logs/
+/test/checkpoints/
+/input/

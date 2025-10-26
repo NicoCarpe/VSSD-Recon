@@ -3,10 +3,10 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.utils.checkpoint as checkpoint
 from timm.layers import DropPath, to_2tuple, trunc_normal_
-from mamba_ssm.ops.triton.ssd_combined import mamba_chunk_scan_combined
-from mamba_ssm.ops.triton.ssd_combined import mamba_split_conv1d_scan_combined
-from mamba_ssm.ops.triton.layernorm_gated import RMSNorm as RMSNormGated
-from mamba_ssm.ops.triton.selective_state_update import selective_state_update
+# from mamba_ssm.ops.triton.ssd_combined import mamba_chunk_scan_combined
+# from mamba_ssm.ops.triton.ssd_combined import mamba_split_conv1d_scan_combined
+# from mamba_ssm.ops.triton.layernorm_gated import RMSNorm as RMSNormGated
+# from mamba_ssm.ops.triton.selective_state_update import selective_state_update
 from einops import rearrange, repeat
 
 import math
@@ -264,37 +264,37 @@ class Mamba2(nn.Module):
                 rearrange(x, "b l (h p) -> b l h p", p=self.headdim),
                 dt, A, B, C, self.D, H, W
             )
-        else:
-            if self.kwargs.get('bidirection', False):
-                #assert self.ngroups == 2 #only support bidirectional with 2 groups
-                x = to_ttensor(rearrange(x, "b l (h p) -> b l h p", p=self.headdim)).chunk(2, dim=-2)
-                B = to_ttensor(rearrange(B, "b l (g n) -> b l g n", g=self.ngroups)).chunk(2, dim=-2)
-                C = to_ttensor(rearrange(C, "b l (g n) -> b l g n", g=self.ngroups)).chunk(2, dim=-2)
-                dt = dt.chunk(2, dim=-1) # (B, L, nheads) -> (B, L, nheads//2)*2
-                A, D = A.chunk(2, dim=-1), self.D.chunk(2,dim=-1) # (nheads) -> (nheads//2)*2
-                y_forward = mamba_chunk_scan_combined(
-                    x[0], dt[0], A[0], B[0], C[0], chunk_size=self.chunk_size, D=D[0], z=None, seq_idx=seq_idx,
-                    initial_states=initial_states, **dt_limit_kwargs
-                )
-                y_backward = mamba_chunk_scan_combined(
-                    x[1].flip(1), dt[1].flip(1), A[1], B[1].flip(1), C[1].flip(1), chunk_size=self.chunk_size, D=D[1], z=None, seq_idx=seq_idx,
-                    initial_states=initial_states, **dt_limit_kwargs
-                )
-                y = torch.cat([y_forward, y_backward.flip(1)], dim=-2)
-            else:
-                y = mamba_chunk_scan_combined(
-                    to_ttensor(rearrange(x, "b l (h p) -> b l h p", p=self.headdim)),
-                    to_ttensor(dt),
-                    to_ttensor(A),
-                    to_ttensor(rearrange(B, "b l (g n) -> b l g n", g=self.ngroups)),
-                    to_ttensor(rearrange(C, "b l (g n) -> b l g n", g=self.ngroups)),
-                    chunk_size=self.chunk_size,
-                    D=to_ttensor(self.D),
-                    z=None,
-                    seq_idx=seq_idx,
-                    initial_states=initial_states,
-                    **dt_limit_kwargs,
-                )
+        # else:
+        #     if self.kwargs.get('bidirection', False):
+        #         #assert self.ngroups == 2 #only support bidirectional with 2 groups
+        #         x = to_ttensor(rearrange(x, "b l (h p) -> b l h p", p=self.headdim)).chunk(2, dim=-2)
+        #         B = to_ttensor(rearrange(B, "b l (g n) -> b l g n", g=self.ngroups)).chunk(2, dim=-2)
+        #         C = to_ttensor(rearrange(C, "b l (g n) -> b l g n", g=self.ngroups)).chunk(2, dim=-2)
+        #         dt = dt.chunk(2, dim=-1) # (B, L, nheads) -> (B, L, nheads//2)*2
+        #         A, D = A.chunk(2, dim=-1), self.D.chunk(2,dim=-1) # (nheads) -> (nheads//2)*2
+        #         y_forward = mamba_chunk_scan_combined(
+        #             x[0], dt[0], A[0], B[0], C[0], chunk_size=self.chunk_size, D=D[0], z=None, seq_idx=seq_idx,
+        #             initial_states=initial_states, **dt_limit_kwargs
+        #         )
+        #         y_backward = mamba_chunk_scan_combined(
+        #             x[1].flip(1), dt[1].flip(1), A[1], B[1].flip(1), C[1].flip(1), chunk_size=self.chunk_size, D=D[1], z=None, seq_idx=seq_idx,
+        #             initial_states=initial_states, **dt_limit_kwargs
+        #         )
+        #         y = torch.cat([y_forward, y_backward.flip(1)], dim=-2)
+        #     else:
+        #         y = mamba_chunk_scan_combined(
+        #             to_ttensor(rearrange(x, "b l (h p) -> b l h p", p=self.headdim)),
+        #             to_ttensor(dt),
+        #             to_ttensor(A),
+        #             to_ttensor(rearrange(B, "b l (g n) -> b l g n", g=self.ngroups)),
+        #             to_ttensor(rearrange(C, "b l (g n) -> b l g n", g=self.ngroups)),
+        #             chunk_size=self.chunk_size,
+        #             D=to_ttensor(self.D),
+        #             z=None,
+        #             seq_idx=seq_idx,
+        #             initial_states=initial_states,
+        #             **dt_limit_kwargs,
+        #         )
         y = rearrange(y, "b l h p -> b l (h p)")
 
         # # Multiply "gate" branch and apply extra normalization layer

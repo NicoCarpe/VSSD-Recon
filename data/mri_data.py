@@ -180,7 +180,7 @@ class CombinedSliceDataset(torch.utils.data.Dataset):
             )
 
         self.datasets = []
-        self.raw_samples: List[RawDataSample] = []
+        # self.raw_samples: List[RawDataSample] = []
 
         for i, root_i in enumerate(roots):
             self.datasets.append(
@@ -199,7 +199,7 @@ class CombinedSliceDataset(torch.utils.data.Dataset):
                 )
             )
 
-            self.raw_samples = self.raw_samples + self.datasets[-1].raw_samples
+            # self.raw_samples = self.raw_samples + self.datasets[-1].raw_samples
 
     def __len__(self):
         return sum(len(dataset) for dataset in self.datasets)
@@ -528,8 +528,7 @@ class CmrxReconInferenceSliceDataset(torch.utils.data.Dataset):
 
     def _load_volume(self, path):
         """
-        Load the k-space volume, mask, and metadata for 2023/2024 as before,
-        plus the extra 2025 CSV fields when self.year == 2025.
+        Load the k-space volume, mask, and metadata for 2023/2024 as before
         """
         p = Path(path)
 

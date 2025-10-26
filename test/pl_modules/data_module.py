@@ -4,7 +4,7 @@ import importlib
 import lightning as L
 import torch
 import torch.utils
-from data import CombinedSliceDataset, VolumeSampler, FastmriSliceDataset
+from data import CombinedSliceDataset, VolumeSampler
 from data import InferVolumeBatchSampler, InferVolumeDistributedSampler
 
 

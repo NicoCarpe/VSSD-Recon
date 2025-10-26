@@ -263,7 +263,7 @@ class VSSBlock(nn.Module):
         headdim: int = 0,
         mlp_ratio=4.,
         drop=0., 
-        drop_path=0.,
+        drop_path=0.1,
         act_layer=nn.GELU,
         norm_layer: Callable[..., torch.nn.Module] = nn.LayerNorm,
         attn_drop_rate: float = 0,
@@ -272,11 +272,11 @@ class VSSBlock(nn.Module):
         **kwargs,
     ):
         super().__init__()
-        self.cpe1 = nn.Conv2d(dim, dim, 3, padding=1, groups=dim, bias=False)
+        # self.cpe1 = nn.Conv2d(dim, dim, 3, padding=1, groups=dim, bias=False)
         self.norm1 = norm_layer(dim)
         self.ssm = SS2D(d_model=dim, d_state=d_state, dropout=attn_drop_rate, bias=bias, **kwargs)
         self.drop_path = DropPath(drop_path)
-        self.cpe2 = nn.Conv2d(dim, dim, 3, padding=1, groups=dim, bias=False)
+        # self.cpe2 = nn.Conv2d(dim, dim, 3, padding=1, groups=dim, bias=False)
         self.norm2 = norm_layer(dim)
         self.mlp = Mlp(in_features=dim, hidden_features=int(dim * mlp_ratio), act_layer=act_layer, drop=drop)
 
@@ -287,7 +287,7 @@ class VSSBlock(nn.Module):
         x = x.permute(0, 2, 3, 1)
 
         # make sure conv are shaped properly
-        x = x + self.cpe1(x.permute(0, 3, 1, 2)).permute(0, 2, 3, 1)
+        # x = x + self.cpe1(x.permute(0, 3, 1, 2)).permute(0, 2, 3, 1)
         shortcut = x
 
         x = self.norm1(x)
@@ -295,7 +295,7 @@ class VSSBlock(nn.Module):
         # SSD or Standard Attention
         x = self.ssm(x)
         x = shortcut + self.drop_path(x)
-        x = x + self.cpe2(x.permute(0, 3, 1, 2)).permute(0, 2, 3, 1)
+        # x = x + self.cpe2(x.permute(0, 3, 1, 2)).permute(0, 2, 3, 1)
 
         # MLP
         x = x + self.drop_path(self.mlp(self.norm2(x)))
