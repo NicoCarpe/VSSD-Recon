@@ -3,23 +3,50 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.utils.checkpoint as checkpoint
 from timm.layers import DropPath, to_2tuple, trunc_normal_
-from mamba_ssm.ops.triton.ssd_combined import mamba_chunk_scan_combined
-from mamba_ssm.ops.triton.ssd_combined import mamba_split_conv1d_scan_combined
-from mamba_ssm.ops.triton.layernorm_gated import RMSNorm as RMSNormGated
-from mamba_ssm.ops.triton.selective_state_update import selective_state_update
+# Only the causal chunk-scan path (linear_attn_duality=False) needs these Triton
+# kernels. The NC-SSD path used by VSSD-Recon does not, so keep the import optional:
+# it lets the model run on machines without mamba_ssm / a matching CUDA build.
+try:
+    from mamba_ssm.ops.triton.ssd_combined import mamba_chunk_scan_combined
+    from mamba_ssm.ops.triton.ssd_combined import mamba_split_conv1d_scan_combined
+    from mamba_ssm.ops.triton.layernorm_gated import RMSNorm as RMSNormGated
+    from mamba_ssm.ops.triton.selective_state_update import selective_state_update
+except ImportError:
+    mamba_chunk_scan_combined = None
+    mamba_split_conv1d_scan_combined = None
+    RMSNormGated = None
+    selective_state_update = None
 from einops import rearrange, repeat
 
 import math
 # from fvcore.nn import FlopCountAnalysis, flop_count_str, flop_count, parameter_count
 
 class tTensor(torch.Tensor):
+    """Upstream VSSD wraps the SSM inputs in this so `.shape` yields a plain tuple of
+    ints instead of a `torch.Size`. That only matters where the shape can hold SymInts
+    -- tracing, torch.compile, ONNX export. `torch.Size` is already a tuple subclass,
+    so in eager training it changes nothing: wrapping and not wrapping give bitwise
+    identical output (max|diff| = 0.000e+00, 4 cascades at 64^2).
+
+    It is not free. Subclassing torch.Tensor sends every downstream op through
+    __torch_function__, and the subclass propagates into every result, so the whole
+    SSM path pays it -- measured 19.6% more aten ops and 2.7x the wall clock
+    (1.528 -> 0.560 s/iter fwd+bwd on CPU).
+
+    Kept for anyone who needs to trace the model; set USE_TTENSOR to re-enable.
+    """
     @property
     def shape(self):
-        shape = super().shape
-        return tuple([int(s) for s in shape])
+        return tuple(int(s) for s in super().shape)
 
 
-to_ttensor = lambda *args: tuple([tTensor(x) for x in args]) if len(args) > 1 else tTensor(args[0])
+USE_TTENSOR = False   # True only for tracing / export, where SymInts appear
+
+
+def to_ttensor(*args):
+    if USE_TTENSOR:
+        return tuple(tTensor(x) for x in args) if len(args) > 1 else tTensor(args[0])
+    return tuple(args) if len(args) > 1 else args[0]
 
 
 class Mlp(nn.Module):
@@ -113,7 +140,10 @@ class Mamba2(nn.Module):
         self.chunk_size = chunk_size #torch.tensor(chunk_size,dtype=torch.int32)
         self.use_mem_eff_path = use_mem_eff_path
         self.layer_idx = layer_idx
-        self.ssd_positve_dA = False # kwargs.get('ssd_positve_dA', True) #default to False, ablation for linear attn duality
+        # Upstream VSSD defaults this to True, which makes dA = -dt*A positive.
+        # It was pinned to False here as an ablation; keep that as the default so
+        # existing variants are unchanged, but let a config override it.
+        self.ssd_positve_dA = kwargs.get('ssd_positve_dA', False)
         # Order: [z, x, B, C, dt]
         d_in_proj = 2 * self.d_inner + 2 * self.ngroups * self.d_state + self.nheads
         # Order: [x, B, C, dt]
@@ -191,7 +221,7 @@ class Mamba2(nn.Module):
         dstate = B.shape[2]
         V = x.permute(0, 2, 1, 3) # (B, H, L, D)
         dt = dt.permute(0, 2, 1) # (B, H, L)
-        dA = dt.unsqueeze(-1) * A.view(1, -1, 1, 1).repeat(batch, 1, seqlen, 1)
+        dA = dt.unsqueeze(-1) * A.view(1, -1, 1, 1)   # broadcasts to (B, H, L, 1)
         if self.ssd_positve_dA: dA = -dA
 
         V_scaled = V * dA
@@ -207,7 +237,7 @@ class Mamba2(nn.Module):
             KV = K.transpose(-2, -1) @ V_scaled # (B, H, dstate, D)
             Q = C.view(batch, 1, seqlen, dstate)#.repeat(1, head, 1, 1)
             x = Q @ KV # (B, H, L, D)
-            x = x + V * D.view(1, -1, 1, 1).repeat(batch, 1, seqlen, 1)
+            x = x + V * D.view(1, -1, 1, 1)
             x = x.permute(0, 2, 1, 3).contiguous()  # (B, L, H, D)
         else:
             assert head % self.ngroups == 0
@@ -218,7 +248,7 @@ class Mamba2(nn.Module):
 
             KV = K.transpose(-2, -1) @ V_scaled # (B, H//g, g, dstate, D)
             x = Q @ KV # (B, H//g, g, L, D)
-            V_skip = (V * D.view(1, -1, 1, 1).repeat(batch, 1, seqlen, 1)).view(batch, head//self.ngroups, self.ngroups, seqlen, dim) # (B, H//g, g, L, D)
+            V_skip = (V * D.view(1, -1, 1, 1)).view(batch, head//self.ngroups, self.ngroups, seqlen, dim) # (B, H//g, g, L, D)
             x = x + V_skip # (B, H//g, g, L, D)
             x = x.permute(0, 3, 1, 2, 4).flatten(2, 3).reshape(batch, seqlen, head, dim) # (B, L, H, D)
             x = x.contiguous()
@@ -265,6 +295,11 @@ class Mamba2(nn.Module):
                 dt, A, B, C, self.D, H, W
             )
         else:
+            if mamba_chunk_scan_combined is None:
+                raise ImportError(
+                    'linear_attn_duality=False needs the mamba_ssm Triton kernels; '
+                    'install mamba-ssm, or set linear_attn_duality=True to use NC-SSD.'
+                )
             if self.kwargs.get('bidirection', False):
                 #assert self.ngroups == 2 #only support bidirectional with 2 groups
                 x = to_ttensor(rearrange(x, "b l (h p) -> b l h p", p=self.headdim)).chunk(2, dim=-2)
@@ -306,7 +341,7 @@ class Mamba2(nn.Module):
 
 
 class VSSDBlock(nn.Module):
-    """ MLLA Block.
+    """ VSSD block: NC-SSD (or MSA) token mixer + FFN, each with a conditional-position depthwise conv.
 
     Args:
         dim (int): Number of input channels.
@@ -348,10 +383,14 @@ class VSSDBlock(nn.Module):
         """
 
         B, C, H, W = x.shape
+        # cpe1 wants NCHW, which is what was passed in. Going via the flattened tensor
+        # (`x.reshape(B, H, W, C).permute(0, 3, 1, 2)`) recovers exactly this tensor, but
+        # reshape on a transposed view is not a view, so it copies the whole activation.
+        x_nchw = x
         # [B, C, H, W] → [B, l, C]
         x = x.flatten(2).transpose(1, 2)
 
-        x = x + self.cpe1(x.reshape(B, H, W, C).permute(0, 3, 1, 2)).flatten(2).permute(0, 2, 1)
+        x = x + self.cpe1(x_nchw).flatten(2).permute(0, 2, 1)
         shortcut = x
 
         x = self.norm1(x)

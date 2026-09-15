@@ -1,0 +1,21 @@
+# Inference-only dependencies for the CMRxRecon2025 Docker submission image.
+# torch / torchvision come from the base image (see ../../dockerfile) and are
+# deliberately not pinned here.
+#
+# mamba_ssm is NOT required: this package runs VSSD-Recon with
+# linear_attn_duality=True (the NC-SSD path), which never enters the Triton
+# chunk-scan kernel. models/VSSDBlock.py has those imports commented out.
+
+einops==0.8.1
+fvcore==0.1.5.post20220512
+h5py==3.11.0
+jsonargparse[all]==4.39.0
+lightning==2.4.0
+lightning-utilities==0.11.6
+matplotlib==3.10.0
+numpy==1.26.4
+PyYAML==6.0.2
+scikit-image==0.24.0
+scipy==1.15.1
+timm==1.0.15
+torchmetrics==1.4.1

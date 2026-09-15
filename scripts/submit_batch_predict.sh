@@ -29,8 +29,6 @@ module load cudnn/8.9.5.29
 module load nccl/2.18.3
 module load python/3.10
 
-# enable H100 tensor-core matmuls (inside Python)
-export PYTHONSTARTUP=$PROJECT_ROOT/.pystartup_matmul
 
 # create a clean venv
 python -m venv $SLURM_TMPDIR/env

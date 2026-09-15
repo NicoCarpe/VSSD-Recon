@@ -1,0 +1,40 @@
+# VSSD-Recon with the scaffold defects corrected. Same block, same sizes as the
+# "Tiny" preset in vssd-recon.yaml, so a run against that config isolates the three
+# changes documented in models/vssd_recon_fixed.py:
+#   - no LayerNorm on the output channels of the head
+#   - FinalProjection expansion and padding tied to patch_size
+#   - ssd_positve_dA=True (upstream VSSD default)
+#
+# patch_size now takes effect: 2 halves the resolution floor to H/2 at ~4x the
+# token count in the finest stage. Start at 4 to keep the comparison one-variable.
+
+model:
+  class_path: pl_modules.PromptMrModule
+  init_args:
+    model_version:      vssd_recon_fixed
+    num_cascades:       12
+    num_adj_slices:     5
+    patch_size:         4
+    d_state:            128
+    n_feat0:            64
+    num_heads:          [2,4,8,16]
+    feature_dim:        [128,256,512]
+    sens_n_feat0:       64
+    sens_feature_dim:   [128,256,512]
+    n_enc_cab:          [2,4,12]
+    n_dec_cab:          [2,4,12]
+    n_skip_cab:         [0,0,0]
+    n_bottleneck_cab:   4
+    adaptive_input:     false
+    n_buffer:           0
+    n_history:          0
+    use_sens_adj:       true
+    lr_gamma:           0.1
+    weight_decay:       1e-2
+    use_checkpoint:     false
+
+trainer:
+  logger:
+    class_path: lightning.pytorch.loggers.WandbLogger
+    init_args:
+      tags: [VSSD-Recon, fixed-head]

@@ -64,11 +64,17 @@ def apply_mask(
         else:
             mask, num_low_frequencies, mask_type, acc = mask_func(shape, offset, seed)
     else:
+        # PoissonDiscMaskFunc.__call__ returns 2 values; every other MaskFunc
+        # subclass returns 3 (mask, num_low_frequencies, acceleration). Unpacking
+        # 2 unconditionally made apply_mask raise for RandomMaskFunc,
+        # FixedLow*MaskFunc and EquispacedMaskFractionFunc.
         if isinstance(mask_func, PoissonDiscMaskFunc):
             mask_type = 'poisson_disc'
+            mask, num_low_frequencies = mask_func(shape, offset, seed)
+            acc = None
         else:
             mask_type = 'cartesian'
-        mask, num_low_frequencies = mask_func(shape, offset, seed)
+            mask, num_low_frequencies, acc = mask_func(shape, offset, seed)
     if padding is not None:
         mask[..., : padding[0], :] = 0
         mask[..., padding[1] :, :] = 0  # padding value inclusive on right of zeros

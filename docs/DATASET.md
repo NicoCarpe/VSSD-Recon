@@ -1,13 +1,13 @@
 # Prepare the dataset
 
-The dataset split information is available in the [configs/data_split](configs/data_split) folder. 
+The dataset split information is available in the [configs/data_split](../configs/data_split) folder. 
 
 ## CMRxRecon 2023 & 2024
 
 We need to convert the original MATLAB training dataset to H5 format for faster slice data reading during training. Run the following command:
 
 ```python
-python prepare_h5_dataset_cmrxrecon.py \
+python scripts/prepare_h5_dataset_cmrxrecon.py \
     --input_matlab_folder /path/to/MICCAIChallenge2024/ChallengeData/MultiCoil \
     --output_h5_folder /path/to/cmrxrecon2024/h5_dataset \
     --split_json configs/data_split/cmr24-cardiac.json \
@@ -43,6 +43,37 @@ The saved H5 file structure is as follows:
 │   │   ├── P001_cine_lax.h5 (symbolic link)
 │   │   ├── ...
 ```
+
+## CMRxRecon2025
+
+Same converter, `--year 2025`. This is the dataset VSSD-Recon was trained and evaluated on.
+
+```bash
+python scripts/prepare_h5_dataset_cmrxrecon.py \
+    --input_matlab_folder /path/to/MICCAIChallenge2025/ChallengeData/MultiCoil \
+    --output_h5_folder /path/to/cmrxrecon2025/h5_dataset \
+    --split_json configs/data_split/cmr25-cardiac.json \
+    --year 2025
+```
+
+`configs/data_split/cmr25-manifest.json` lists the volumes; `cmr25-cardiac.json` is the
+train/val split used by `configs/train/vssd-recon/cmr25-cardiac.yaml`.
+
+### Radial mask bank
+
+The 2025 training transform samples pseudo-radial masks from a precomputed bank rather
+than generating them per batch. Build it once:
+
+```bash
+python scripts/build_radial_mask_bank.py \
+    --mat_folder /path/to/MICCAIChallenge2025/ChallengeData/MultiCoil \
+    --out_h5     /path/to/cmrxrecon2025/mask/mask_radial.h5
+```
+
+`--mat_folder` is the root the script globs
+`*/TrainingSet/Mask_TaskAll/*/*/P*/*Radial*.mat` under; for each
+`(acceleration, ny, nx)` combination it keeps the mask with the most temporal phases.
+The output path then goes in `mask_func.init_args.mask_path` of the train config.
 
 ## FastMRI-knee
 

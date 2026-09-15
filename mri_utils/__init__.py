@@ -12,4 +12,4 @@ from .math import (
 )
 from .utils import save_reconstructions, save_reconstructions_mp
 from .utils import load_mask, load_kdata
-from .utils import mse, psnr, ssim
+from .utils import mse, nmse, psnr, ssim

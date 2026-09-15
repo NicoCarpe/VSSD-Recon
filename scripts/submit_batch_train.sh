@@ -43,8 +43,6 @@ python -m pip install --upgrade pip
 python -m pip install --no-index -r $PROJECT_ROOT/configs/env_local.txt
 python -m pip install -r $PROJECT_ROOT/configs/env_pypi.txt
 
-# enable H100 tensor-core matmuls (inside Python)
-export PYTHONSTARTUP=$PROJECT_ROOT/.pystartup_matmul
 
 srun python $PROJECT_ROOT/main.py fit \
     --config $PROJECT_ROOT/configs/base.yaml \

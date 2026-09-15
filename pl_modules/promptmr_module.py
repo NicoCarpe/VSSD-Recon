@@ -2,12 +2,9 @@ import torch
 from data import transforms
 from pl_modules import MriModule
 from typing import List
-import copy 
 from mri_utils import SSIMLoss
-import torch.nn.functional as F
 import importlib
-
-from mri_utils import ifft2c, rss, complex_abs, rss_complex, sens_expand, sens_reduce
+import inspect
 
 def get_model_class(module_name, class_name="PromptMR"):
     """
@@ -52,7 +49,7 @@ class PromptMrModule(MriModule):
         n_history:              int = 0,
         use_sens_adj:           bool = True,
         dropout:                float = 0.,
-        model_version:          str = "vssd_recon_encode",
+        model_version:          str = "vssd_recon",
         lr:                     float = 0.0002,
         lr_step_size:           int = 11,
         lr_gamma:               float = 0.1,
@@ -89,7 +86,7 @@ class PromptMrModule(MriModule):
             n_history: number of historical feature aggregation, should be less than num_cascades.
             dropout: TODO
             use_sens_adj: whether to use adjacent sensitivity map estimation.
-            model_version: model version. Default is "promptmr_v2".
+            model_version: which module under `models/` to instantiate. See models/__init__.py.
             lr: Learning rate.
             lr_step_size: Learning rate step size.
             lr_gamma: Learning rate gamma decay.
@@ -97,7 +94,11 @@ class PromptMrModule(MriModule):
             use_checkpoint: Whether to use checkpointing to trade compute for GPU memory.
             compute_sens_per_coil: (bool) whether to compute sensitivity maps per coil for memory saving
         """
-        super().__init__(**kwargs)
+        # Route extras: MriModule takes only its own arguments, everything else is
+        # model configuration. Forwarding the whole of **kwargs to both raised
+        # TypeError on any model-specific key, which is why no config could set one.
+        mri_keys = set(inspect.signature(MriModule.__init__).parameters) - {"self", "kwargs"}
+        super().__init__(**{k: kwargs.pop(k) for k in list(kwargs) if k in mri_keys})
         self.save_hyperparameters()
         
         self.num_cascades = num_cascades
@@ -191,9 +192,8 @@ class PromptMrModule(MriModule):
     #         except Exception as e:
     #             self.print(f"FLOP counting failed: {e}")
 
-    def forward(self, masked_kspace, mask, num_low_frequencies, mask_type, use_checkpoint=False, compute_sens_per_coil=False, collect_logs=False):
-        return self.promptmr(masked_kspace, mask, num_low_frequencies, mask_type, use_checkpoint=use_checkpoint, compute_sens_per_coil=compute_sens_per_coil, collect_logs=collect_logs)   
-
+    def forward(self, masked_kspace, mask, num_low_frequencies, mask_type, use_checkpoint=False, compute_sens_per_coil=False):
+        return self.promptmr(masked_kspace, mask, num_low_frequencies, mask_type, use_checkpoint=use_checkpoint, compute_sens_per_coil=compute_sens_per_coil)
 
     def training_step(self, batch, batch_idx):
         output_dict = self(batch.masked_kspace, batch.mask, batch.num_low_frequencies, batch.mask_type, 
@@ -213,7 +213,6 @@ class PromptMrModule(MriModule):
             raise ValueError(f'nan loss on {batch.fname} of slice {batch.slice_num}')
         return loss
 
-
     def validation_step(self, batch, batch_idx):
         # Forward pass
         output_dict = self(
@@ -221,8 +220,7 @@ class PromptMrModule(MriModule):
             batch.mask, 
             batch.num_low_frequencies, 
             batch.mask_type,
-            compute_sens_per_coil=self.compute_sens_per_coil, 
-            collect_logs=True
+            compute_sens_per_coil=self.compute_sens_per_coil,
         )
 
         output = output_dict['img_pred']
@@ -241,8 +239,6 @@ class PromptMrModule(MriModule):
         cc = batch.masked_kspace.shape[1]
         centered_coil_visual = torch.log(1e-10 + torch.view_as_complex(batch.masked_kspace[:, cc//2]).abs())
 
-        logs = output_dict.get('logs', None)
-
         return {
             "batch_idx": batch_idx,
             "fname": batch.fname,
@@ -254,7 +250,6 @@ class PromptMrModule(MriModule):
             "output": output,
             "target": target,
             "loss": val_loss,
-            "logs": logs,
         }
 
     def predict_step(self, batch, batch_idx, dataloader_idx=0):

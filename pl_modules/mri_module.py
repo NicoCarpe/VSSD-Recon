@@ -16,7 +16,6 @@ import torch
 from torchmetrics.metric                import Metric
 from torchmetrics.functional.regression import mean_squared_error
 from torchmetrics.functional.image      import structural_similarity_index_measure
-import seaborn as sns
 import matplotlib.pyplot as plt
 from io import BytesIO
 
@@ -144,75 +143,6 @@ class MriModule(L.LightningModule):
 
             cpu_imgs_chw = [mask, sens_maps, img_zf**0.2, output**0.2, target**0.2, error_chw]
             captions = ['mask', 'sens_maps', 'zf', 'reconstruction', 'target', 'error']
-
-            # ---------------------- VSSD VISUALIZATION BLOCK ----------------------
-            vlogs = val_logs.get("logs", None)
-            if isinstance(vlogs, dict) and any(v is not None for v in vlogs.values()):
-                def _norm01_tensor(x, eps=1e-6):
-                    # robust [0,1] normalization that won't NaN on constant tensors
-                    x = x.detach()
-                    xmin = x.min()
-                    xmax = x.max()
-                    return (x - xmin) / (xmax - xmin + eps)
-
-                def _seaborn_heatmap_to_tensor(arr2d, cmap="mako", vmin=None, vmax=None, figsize=(4, 4), dpi=100):
-                    if isinstance(arr2d, torch.Tensor):
-                        arr = arr2d.squeeze().detach().cpu().numpy()
-                    else:
-                        arr = np.array(arr2d)
-                    fig = plt.figure(figsize=figsize, dpi=dpi)
-                    ax = fig.add_subplot(111)
-                    ax.set_axis_off()
-                    sns.heatmap(
-                        arr, cmap=cmap, vmin=vmin, vmax=vmax,
-                        cbar=False, xticklabels=False, yticklabels=False, ax=ax
-                    )
-                    plt.tight_layout(pad=0)
-                    fig.canvas.draw()
-                    h, w = fig.canvas.get_width_height()
-                    buf = np.frombuffer(fig.canvas.buffer_rgba(), dtype=np.uint8).reshape(h, w, 4)[:, :, :3]
-                    img = torch.from_numpy(buf).permute(2, 0, 1).float() / 255.0
-                    plt.close(fig)
-                    return img
-
-                # m_map (optional)
-                m_map = vlogs.get("m_map", None)
-                if isinstance(m_map, torch.Tensor):
-                    m_img = m_map[i] if m_map.ndim >= 3 else m_map
-                    cpu_imgs_chw.append(_seaborn_heatmap_to_tensor(_norm01_tensor(m_img)))
-                    captions.append('m')
-
-                # order_sum (optional)
-                order_sum = vlogs.get("order_sum", None)
-                if isinstance(order_sum, torch.Tensor):
-                    order_sum_img = order_sum[i] if order_sum.ndim >= 3 else order_sum
-                    cpu_imgs_chw.append(_seaborn_heatmap_to_tensor(_norm01_tensor(order_sum_img)))
-                    captions.append('order_sum')
-
-                # per-order maps (optional) — EXPECTS a list/tuple of (B,H,W) CPU tensors
-                order_maps = vlogs.get("order_maps", None)
-                if isinstance(order_maps, (list, tuple)) and len(order_maps) > 0:
-                    for p_idx, p_map in enumerate(order_maps):
-                        if not isinstance(p_map, torch.Tensor):
-                            continue
-                        single_map = p_map[i] if p_map.ndim >= 3 else p_map
-                        cpu_imgs_chw.append(_seaborn_heatmap_to_tensor(_norm01_tensor(single_map)))
-                        captions.append(f"order{p_idx + 1}")
-
-                # gamma: log scalars 
-                gamma = vlogs.get("gamma", None)
-                if isinstance(gamma, torch.Tensor):
-                    g_list = gamma.detach().cpu().float().view(-1).tolist()
-                    for p_idx, gval in enumerate(g_list, 1):
-                        self.log(
-                            f"gamma/order_{p_idx}",
-                            float(gval),
-                            prog_bar=False,
-                            on_step=False,
-                            on_epoch=True,
-                            sync_dist=True,
-                        )
-
 
             # --- Convert all to HWC for W&B ---
             cpu_imgs_hwc = []

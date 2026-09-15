@@ -6,82 +6,11 @@ from typing import Optional, Tuple
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import torch.utils.checkpoint as checkpoint
 from timm.layers import DropPath, to_2tuple, trunc_normal_
 from einops import rearrange
-import matplotlib.pyplot as plt
 
 from data import transforms
-#from .VSSBlock import VSSBlock
 from .VSSDBlock import VSSDBlock
-
-def erf_backbone_central(promptmr, masked_kspace, mask, num_low_frequencies,
-                         cascade_idx=0, device=None, average_over=None):
-    """
-    Computes ERF of the backbone (PromptUnet/liquid_VSSDBlock stack) w.r.t. the
-    aliased, coil-combined input image that enters PatchEmbed. DC is disabled.
-    - promptmr: your PromptMR model (in eval mode).
-    - masked_kspace: (B, Nc, H, W, 2)
-    - mask: (B, 1, H, W, 1) -> we will replace by zeros to disable DC
-    - num_low_frequencies: (B,)
-    - cascade_idx: which cascade’s backbone to probe (default 0)
-    - average_over: if not None, iterate a dataloader and average ERFs
-    """
-    was_training = promptmr.training
-    promptmr.eval()
-
-    def _one_erf(masked_kspace, mask, nlf):
-        # --- disable DC by zeroing the mask ---
-        mask0 = torch.zeros_like(mask)
-
-        # --- capture the image at the backbone input (before PatchEmbed) ---
-        holder = {"x_in": None}
-        hook = promptmr.cascades[cascade_idx].model.unet.patch_embed.register_forward_hook(
-            lambda mod, inp, out: (inp[0].retain_grad(), holder.__setitem__("x_in", inp[0]))
-        )
-
-        # Forward full model (sens maps are computed normally upstream)
-        out = promptmr(masked_kspace, mask0, nlf)
-        img = out["img_pred"]                  # (B, 1, H, W), real image
-        B, _, H, W = img.shape
-        cy, cx = H // 2, W // 2
-        scalar = img[0, 0, cy, cx]
-
-        # Backprop to the backbone input image
-        promptmr.zero_grad(set_to_none=True)
-        scalar.backward()
-
-        hook.remove()
-        x_in = holder["x_in"]                  # (B, C_in, H', W')
-        assert x_in is not None and x_in.grad is not None, "Hook/grad missing"
-
-        # Grad magnitude over channels
-        g = x_in.grad.detach().abs().sum(1, keepdim=True)   # (B,1,H',W')
-        g = g / (g.max() + 1e-12)
-        return g[0, 0]                                      # (H', W')
-
-    # Single batch
-    if average_over is None:
-        gmap = _one_erf(masked_kspace, mask, num_low_frequencies)
-        plt.figure(figsize=(4, 4)); plt.imshow(gmap.cpu(), cmap="magma"); plt.axis("off")
-        plt.title("ERF (backbone only, central pixel)"); plt.show()
-        if was_training: promptmr.train()
-        return gmap
-
-    # Average over a dataloader of test samples
-    acc = None
-    with torch.no_grad():
-        for i, (mk, m, nlf) in enumerate(average_over):
-            g = _one_erf(mk, m, nlf)   # this call backprops, so remove no_grad if you use your DataLoader
-            acc = g if acc is None else acc + g
-    gmean = acc / (i + 1)
-    plt.figure(figsize=(4, 4)); plt.imshow(gmean.cpu(), cmap="magma"); plt.axis("off")
-    plt.title("ERF (backbone only, averaged)"); plt.show()
-    if was_training: promptmr.train()
-    return gmean
-
-
-
 
 ##########################################################################
 # ---------- Down Block -----------------------
@@ -320,152 +249,6 @@ class ConvLayer(nn.Module):
             x = self.act(x)
         return x
 
-# ##########################################################################
-# # -------- Patch Embed -----------------------
-
-# class PatchEmbed(nn.Module):
-#     r""" Stem
-
-#     Args:
-#         patch_size (int): Patch token size. Default: 4.
-#         in_chans (int): Number of input image channels. Default: 3.
-#         embed_dim (int): Number of linear projection output channels. Default: 96.
-#     """
-
-#     def __init__(self, patch_size=4, in_chans=3, embed_dim=96):
-#         super().__init__()
-#         self.in_chans = in_chans
-#         self.embed_dim = embed_dim
-
-
-#         self.conv1 = ConvLayer(in_chans, embed_dim // 2, kernel_size=3, stride=2, padding=1, bias=False)
-#         self.conv2 = nn.Sequential(
-#             ConvLayer(embed_dim // 2, embed_dim // 2, kernel_size=3, stride=1, padding=1, bias=False),
-#             ConvLayer(embed_dim // 2, embed_dim // 2, kernel_size=3, stride=1, padding=1, bias=False, act_func=None)
-#         )
-#         self.conv3 = nn.Sequential(
-#             ConvLayer(embed_dim // 2, embed_dim * 4, kernel_size=3, stride=2, padding=1, bias=False),
-#             ConvLayer(embed_dim * 4, embed_dim, kernel_size=1, bias=False, act_func=None)
-#         )
-
-
-#     def forward(self, x):
-#         """
-#         # x: [B, C, H, W]
-#         """
-#         x = self.conv1(x)
-#         x = self.conv2(x) + x
-#         x = self.conv3(x)
-#         return x
-    
-
-# ##########################################################################
-# # -------- Patch Merge -----------------------
-# class PatchMerge(nn.Module):
-#     r""" Patch Merging Layer.
-
-#     Args:
-#         dim (int): Number of input channels.
-#     """
-
-#     def __init__(self, dim, ratio=4.0):
-#         super().__init__()
-#         self.dim = dim
-#         in_channels = dim
-#         out_channels = 2 * dim
-#         self.conv = nn.Sequential(
-#             ConvLayer(in_channels, int(out_channels * ratio), kernel_size=1, norm=None),
-#             ConvLayer(int(out_channels * ratio), int(out_channels * ratio), kernel_size=3, stride=2, padding=1, groups=int(out_channels * ratio), norm=None),
-#             ConvLayer(int(out_channels * ratio), out_channels, kernel_size=1, act_func=None)
-#         )
-
-#     def forward(self, x):
-#         """
-#         # x: [B, C, H, W]
-#         """
-#         x = self.conv(x)
-#         return x
-    
-# ##########################################################################
-# # -------- Patch Expand -----------------------
-
-# class PatchExpand(nn.Module):
-#     """
-#     Inverse of PatchMerge: upsamples spatial dims by dim_scale and halves channels.
-#     Args:
-#         dim (int): number of input channels
-#         dim_scale (int): upsampling factor per spatial dimension
-#     """
-#     def __init__(self, dim, dim_scale=2, ratio=4.0, norm_layer=nn.LayerNorm):
-#         super().__init__()
-#         self.dim = dim
-#         self.dim = dim
-#         in_channels = dim
-#         out_channels = dim // 2  # 因为我们要扩展空间维度，所以通道数减半
-#         self.norm = norm_layer(out_channels)
-#         self.conv = nn.Sequential(
-#             ConvLayer(in_channels, int(in_channels * ratio), kernel_size=1, norm=None),
-#             nn.ConvTranspose2d(int(in_channels * ratio), int(in_channels * ratio), kernel_size=3, stride=2, padding=1,
-#                                output_padding=1, groups=int(in_channels * ratio), bias=False),
-#             ConvLayer(int(in_channels * ratio), out_channels, kernel_size=1, act_func=None)
-#         )
-
-
-#     def forward(self, x):
-#         """
-#         # x: [B, C, H, W]
-#         """
-#         x = self.conv(x)
-#         x = self.norm(x.permute(0, 2, 3, 1)).permute(0, 3, 1, 2)
-#         return x
-
-
-# ##########################################################################
-# # -------- Final Projection -----------------------
-# class FinalProjection(nn.Module):
-#     """
-#     Inverse of PatchEmbed: upsamples spatial dims by dim_scale and
-#     projects to exactly out_chans real channels.
-#     Args:
-#         in_dim (int): number of input feature channels
-#         out_chans (int): desired number of output (real) channels
-#         dim_scale (int): upsampling factor per spatial dimension
-#         norm_layer (nn.Module): normalization over the last channel axis
-#     """
-#     def __init__(self, in_dim: int, out_chans: int, dim_scale: int = 4, norm_layer=nn.LayerNorm):
-#         super().__init__()
-#         self.dim_scale = dim_scale
-#         self.out_chans = out_chans
-#         # project from in_dim → (dim_scale^2 * out_chans)
-#         self.expand = nn.Linear(in_dim, (dim_scale ** 2) * out_chans, bias=False)
-#         # normalize over the final out_chans axis
-#         self.norm = norm_layer(out_chans)
-
-#     def forward(self, x):
-#         # x: [B, in_dim, H, W]
-#         # → [B, H, W, in_dim] so we can do a point-wise linear
-#         x = x.permute(0, 2, 3, 1).contiguous()  
-
-#         # → [B, H, W, dim_scale^2 * out_chans]
-#         x = self.expand(x)
-
-#         # split that last axis into (p1, p2, out_chans)
-#         # which upsamples H,W by p1,p2 and leaves out_chans channels
-#         x = rearrange(
-#             x,
-#             'b h w (p1 p2 c) -> b (h p1) (w p2) c',
-#             p1=self.dim_scale,
-#             p2=self.dim_scale,
-#             c=self.out_chans
-#         )  # → [B, H*dim_scale, W*dim_scale, out_chans]
-
-#         # normalize over the channel axis
-#         x = self.norm(x)
-
-#         # → [B, out_chans, H*dim_scale, W*dim_scale]
-#         return x.permute(0, 3, 1, 2).contiguous()
-
-
 ##########################################################################
 # -------- Patch Embed -----------------------
 
@@ -596,19 +379,35 @@ class FinalProjection(nn.Module):
         dim_scale (int): upsampling factor per spatial dimension
         norm_layer (nn.Module): normalization over the last channel axis
     """
-    def __init__(self, in_dim: int, out_chans: int, dim_scale: int = 4, norm_layer=nn.LayerNorm):
+    def __init__(self, in_dim: int, out_chans: int, dim_scale: int = 4, norm_layer=nn.LayerNorm,
+                 norm_output: bool = True):
         super().__init__()
         self.dim_scale = dim_scale
         self.out_chans = out_chans
         # project from in_dim → (dim_scale^2 * out_chans)
         self.expand = nn.Linear(in_dim, (dim_scale ** 2) * out_chans, bias=False)
-        # normalize over the final out_chans axis
-        self.norm = norm_layer(out_chans)
+        # norm_output=True normalises the *output* channels, which pins
+        # ||out(h, w)||_2 to sqrt(out_chans) at every pixel and so prevents the head
+        # from varying its correction magnitude spatially. Kept as the default only
+        # because the trained variants were built this way; norm_output=False norms
+        # the features before the projection instead. See vssd_recon_fixed.py.
+        # norm_layer=None removes normalisation from the head entirely. With
+        # norm_output=False the LayerNorm still sits on the features, which pins
+        # ||feature(h,w)|| and so still limits how much the head can vary its output
+        # magnitude across the image -- just less than normalising the output did.
+        self.norm_output = norm_output
+        if norm_layer is None:
+            self.norm = None
+        else:
+            self.norm = norm_layer(out_chans) if norm_output else norm_layer(in_dim)
 
     def forward(self, x):
         # x: [B, in_dim, H, W]
         # → [B, H, W, in_dim] so we can do a point-wise linear
         x = x.permute(0, 2, 3, 1).contiguous()  
+
+        if self.norm is not None and not self.norm_output:
+            x = self.norm(x)
 
         # → [B, H, W, dim_scale^2 * out_chans]
         x = self.expand(x)
@@ -623,8 +422,8 @@ class FinalProjection(nn.Module):
             c=self.out_chans
         )  # → [B, H*dim_scale, W*dim_scale, out_chans]
 
-        # normalize over the channel axis
-        x = self.norm(x)
+        if self.norm is not None and self.norm_output:
+            x = self.norm(x)
 
         # → [B, out_chans, H*dim_scale, W*dim_scale]
         return x.permute(0, 3, 1, 2).contiguous()

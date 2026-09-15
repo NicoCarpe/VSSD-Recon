@@ -6,7 +6,6 @@ import torch
 from torch import nn
 import torch.nn.functional as F
 from einops import rearrange
-from fvcore.nn import FlopCountAnalysis, flop_count_str, flop_count, parameter_count
 from mri_utils import ifft2c, rss, complex_abs, rss_complex, sens_expand, sens_reduce
 
 from .utils_VSS import KspaceACSExtractor, DownBlock, UpBlock, SkipBlock, PatchEmbed, FinalProjection
@@ -416,6 +415,7 @@ class PromptMR(nn.Module):
 
     @torch.no_grad()
     def flops(self, input_shape=(1, 30, 256, 512, 2), ):
+        from fvcore.nn import FlopCountAnalysis  # optional dep, only needed here
 
         supported_ops = {
             "aten::silu": None, 
